@@ -52,3 +52,32 @@ tool_definition = {
         "required": ["query"]
     }
 }
+
+
+
+from azure.identity import DefaultAzureCredential
+from azure.ai.projects import AIProjectClient
+from azure.ai.projects.models import Tool
+
+# ✅ Create client
+project_client = AIProjectClient(
+    endpoint=os.getenv("PROJECT_ENDPOINT"),
+    credential=DefaultAzureCredential()
+)
+
+# ✅ Convert your tool definition into Foundry Tool
+movie_tool = Tool(function=tool_definition)
+
+# ✅ Create agent
+agent = project_client.agents.create_agent(
+    model=os.getenv("MODEL"),
+    name="movie-agent",
+    instructions="""
+You are a helpful movie assistant.
+
+- If the user asks about movies, ALWAYS use the search_movie tool
+- Do not guess movie data
+- Return clear and clean responses
+""",
+    tools=[movie_tool]
+)
