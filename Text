@@ -37,3 +37,18 @@ def search_movie(query):
 
 # Test
 search_movie("Avengers")
+
+tool_definition = {
+    "name": "search_movie",
+    "description": "Search for movies using TMDB API based on a movie name or keyword",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Movie name or keyword to search for"
+            }
+        },
+        "required": ["query"]
+    }
+}
