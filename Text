@@ -6,22 +6,24 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-API_KEY = os.getenv("TMDB_API_KEY")
+BEARER_TOKEN = os.getenv("TMDB_BEARER_TOKEN")
 
 def search_movie(query):
     url = "https://api.themoviedb.org/3/search/movie"
-    
+
+    headers = {
+        "accept": "application/json",
+        "Authorization": f"Bearer {BEARER_TOKEN}"
+    }
+
     params = {
-        "api_key": API_KEY,
         "query": query
     }
 
-    response = requests.get(url, params=params)
+    response = requests.get(url, headers=headers, params=params)
     data = response.json()
 
-    # Print raw response for now
     print(data)
 
 # Test
 search_movie("Avengers")
-eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJhNzM5MGVlYWY5MDE2MGQ1ZDdkZjBkN2FhYjRiNWMwMyIsIm5iZiI6MTY0ODIzMDkwOC45NjEsInN1YiI6IjYyM2UwMWZjNDFhZDhkMDA5MGU4ODA1YSIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.DsfkQ93CioR1HZSodD7jk4LS3GaNHSvUyAEKWRafPJ4
