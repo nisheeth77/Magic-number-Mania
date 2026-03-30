@@ -23,7 +23,17 @@ def search_movie(query):
     response = requests.get(url, headers=headers, params=params)
     data = response.json()
 
-    print(data)
+    movies = []
+
+    for movie in data.get("results", [])[:5]:   # limit to top 5
+        movies.append({
+            "title": movie.get("title"),
+            "year": movie.get("release_date", "")[:4],
+            "rating": movie.get("vote_average"),
+            "overview": movie.get("overview")
+        })
+
+    return movies
 
 # Test
 search_movie("Avengers")
