@@ -81,3 +81,182 @@ You are a helpful movie assistant.
 """,
     tools=[movie_tool]
 )
+
+
+
+
+
+_____________________________
+
+
+
+
+
+import requests
+import os
+import json
+import time
+from dotenv import load_dotenv
+
+from azure.identity import DefaultAzureCredential
+from azure.ai.projects import AIProjectClient
+
+# ==============================
+# 🔹 Load Environment Variables
+# ==============================
+load_dotenv()
+
+BEARER_TOKEN = os.getenv("TMDB_BEARER_TOKEN")
+PROJECT_ENDPOINT = os.getenv("PROJECT_ENDPOINT")
+MODEL = os.getenv("MODEL")
+
+# ==============================
+# 🔹 TMDB API Function
+# ==============================
+def search_movie(query):
+    url = "https://api.themoviedb.org/3/search/movie"
+
+    headers = {
+        "accept": "application/json",
+        "Authorization": f"Bearer {BEARER_TOKEN}"
+    }
+
+    params = {
+        "query": query
+    }
+
+    response = requests.get(url, headers=headers, params=params)
+    data = response.json()
+
+    movies = []
+
+    for movie in data.get("results", [])[:5]:
+        movies.append({
+            "title": movie.get("title"),
+            "year": movie.get("release_date", "")[:4],
+            "rating": movie.get("vote_average"),
+            "overview": movie.get("overview")
+        })
+
+    return movies
+
+# ==============================
+# 🔹 Tool Definition
+# ==============================
+tool_definition = {
+    "name": "search_movie",
+    "description": "Search for movies using TMDB API",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Movie name or keyword"
+            }
+        },
+        "required": ["query"],
+        "additionalProperties": False
+    }
+}
+
+movie_tool = {
+    "type": "function",
+    "function": tool_definition
+}
+
+# ==============================
+# 🔹 Create Foundry Client
+# ==============================
+project_client = AIProjectClient(
+    endpoint=PROJECT_ENDPOINT,
+    credential=DefaultAzureCredential()
+)
+
+# ==============================
+# 🔹 Create Agent
+# ==============================
+agent = project_client.agents.create_agent(
+    model=MODEL,
+    name="movie-agent",
+    instructions="""
+You are a helpful movie assistant.
+
+- ALWAYS use the search_movie tool when user asks about movies
+- Do not make up movie data
+- Return clean and readable movie suggestions
+""",
+    tools=[movie_tool]
+)
+
+print(f"✅ Agent created: {agent.id}")
+
+# ==============================
+# 🔹 Create Thread
+# ==============================
+thread = project_client.agents.create_thread()
+
+# ==============================
+# 🔹 User Input
+# ==============================
+user_query = input("Enter your prompt: ")
+
+project_client.agents.create_message(
+    thread_id=thread.id,
+    role="user",
+    content=user_query
+)
+
+# ==============================
+# 🔹 Create Run
+# ==============================
+run = project_client.agents.create_run(
+    thread_id=thread.id,
+    agent_id=agent.id
+)
+
+# ==============================
+# 🔹 Handle Agent Loop
+# ==============================
+while True:
+    run = project_client.agents.get_run(
+        thread_id=thread.id,
+        run_id=run.id
+    )
+
+    if run.status == "completed":
+        break
+
+    elif run.status == "requires_action":
+        tool_calls = run.required_action.submit_tool_outputs.tool_calls
+        
+        outputs = []
+
+        for call in tool_calls:
+            if call.function.name == "search_movie":
+                args = json.loads(call.function.arguments)
+
+                result = search_movie(args["query"])
+
+                outputs.append({
+                    "tool_call_id": call.id,
+                    "output": json.dumps(result)
+                })
+
+        run = project_client.agents.submit_tool_outputs(
+            thread_id=thread.id,
+            run_id=run.id,
+            tool_outputs=outputs
+        )
+
+    else:
+        time.sleep(1)
+
+# ==============================
+# 🔹 Get Final Response
+# ==============================
+messages = project_client.agents.list_messages(thread.id)
+
+for msg in messages:
+    if msg.role == "assistant":
+        print("\n🎬 Response:\n")
+        print(msg.content)
