@@ -90,8 +90,6 @@ _____________________________
 
 
 
-
-
 import requests
 import os
 import json
@@ -191,9 +189,11 @@ You are a helpful movie assistant.
 print(f"✅ Agent created: {agent.id}")
 
 # ==============================
-# 🔹 Create Thread
+# 🔹 Create Conversation
 # ==============================
-thread = project_client.agents.create_thread()
+conversation = project_client.agents.create_conversation()
+
+print(f"🧵 Conversation ID: {conversation.id}")
 
 # ==============================
 # 🔹 User Input
@@ -201,7 +201,7 @@ thread = project_client.agents.create_thread()
 user_query = input("Enter your prompt: ")
 
 project_client.agents.create_message(
-    thread_id=thread.id,
+    conversation_id=conversation.id,
     role="user",
     content=user_query
 )
@@ -210,7 +210,7 @@ project_client.agents.create_message(
 # 🔹 Create Run
 # ==============================
 run = project_client.agents.create_run(
-    thread_id=thread.id,
+    conversation_id=conversation.id,
     agent_id=agent.id
 )
 
@@ -219,7 +219,7 @@ run = project_client.agents.create_run(
 # ==============================
 while True:
     run = project_client.agents.get_run(
-        thread_id=thread.id,
+        conversation_id=conversation.id,
         run_id=run.id
     )
 
@@ -242,8 +242,8 @@ while True:
                     "output": json.dumps(result)
                 })
 
-        run = project_client.agents.submit_tool_outputs(
-            thread_id=thread.id,
+        project_client.agents.submit_tool_outputs(
+            conversation_id=conversation.id,
             run_id=run.id,
             tool_outputs=outputs
         )
@@ -254,9 +254,13 @@ while True:
 # ==============================
 # 🔹 Get Final Response
 # ==============================
-messages = project_client.agents.list_messages(thread.id)
+messages = project_client.agents.list_messages(
+    conversation_id=conversation.id
+)
+
+print("\n🎬 Response:\n")
 
 for msg in messages:
     if msg.role == "assistant":
-        print("\n🎬 Response:\n")
         print(msg.content)
+
