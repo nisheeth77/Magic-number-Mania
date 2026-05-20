@@ -1,57 +1,218 @@
-You are an insurance advisor.
+import pandas as pd
+import numpy as np
 
-Your role is to recommend suitable insurance plans based on the given user profile and provide real-world plan examples using search.
+# Reproducibility
+np.random.seed(42)
 
-IMPORTANT RULES:
-- Do NOT ask follow-up questions
-- Do NOT wait for user input
-- Use the provided user profile directly
-- If some details are missing, assume reasonable defaults
+# =========================
+# CONFIGURATION
+# =========================
+n_brands = 6
+n_orgs = 44
+n_months = 48
 
-You have access to a search tool. Use it when needed.
+dates = pd.date_range(
+    start="2021-01-01",
+    periods=n_months,
+    freq="MS"
+)
 
-Input format:
+brands = [f"Brand_{i}" for i in range(1, n_brands + 1)]
+orgs = [f"Store_{i}" for i in range(1, n_orgs + 1)]
 
-Intent: Insurance
+data = []
 
-User Profile:
-- Age:
-- Monthly Income:
-- Investment Amount:
-- Risk Level:
-- Duration:
-- Financial Goal:
-- Profile Complete:
+# =========================
+# GENERATE SYNTHETIC DATA
+# =========================
+for brand in brands:
+    for org in orgs:
 
-Your tasks:
+        # Base revenue
+        base = np.random.uniform(500, 2000)
 
-1. Identify insurance needs:
-   - Health insurance
-   - Life insurance
-   - Or both
+        # Growth trend
+        slope = np.random.uniform(-5, 10)
 
-2. Suggest:
-   - Type of plan (individual / family floater / term insurance)
-   - Recommended coverage amount
+        # Seasonality pattern
+        seasonality = (
+            np.sin(np.arange(n_months) * 2 * np.pi / 12)
+            * np.random.uniform(50, 200)
+        )
 
-3. Use the search tool to find:
-   - Popular insurance providers
-   - Commonly recommended plans (India context if not specified)
+        # Random noise
+        noise = np.random.normal(0, 50, n_months)
 
-4. Provide 2–3 example plans (no need to guarantee accuracy)
+        # Revenue series
+        revenue_series = (
+            base
+            + slope * np.arange(n_months)
+            + seasonality
+            + noise
+        )
 
-5. Return output in this format:
+        # Ensure revenue is positive
+        revenue_series = np.maximum(revenue_series, 50)
 
-Insurance Recommendation:
+        # Create rows
+        for i in range(n_months):
 
-- Type:
-- Coverage Amount:
-- Suggested Plan Type:
+            promotion = np.random.choice(
+                [0, 1],
+                p=[0.8, 0.2]
+            )
 
-Popular Plans (from search):
-1.
-2.
-3.
+            holiday = np.random.choice(
+                [0, 1],
+                p=[0.9, 0.1]
+            )
 
-Explanation:
-<short reason>
+            inventory = np.random.randint(100, 1000)
+
+            revenue = revenue_series[i]
+
+            # Promotion impact
+            if promotion == 1:
+                revenue *= 1.25
+
+            # Holiday impact
+            if holiday == 1:
+                revenue *= 1.15
+
+            data.append([
+                dates[i],
+                brand,
+                org,
+                round(revenue, 2),
+                promotion,
+                holiday,
+                inventory
+            ])
+
+# =========================
+# CREATE DATAFRAME
+# =========================
+df = pd.DataFrame(
+    data,
+    columns=[
+        "date",
+        "product_brand",
+        "store_id",
+        "revenue",
+        "promotion",
+        "holiday",
+        "inventory"
+    ]
+)
+
+# =========================
+# PIPELINE FEATURE
+# =========================
+df["pipeline"] = (
+    df.groupby(
+        ["product_brand", "store_id"]
+    )["revenue"]
+    .shift(-1)
+)
+
+df["pipeline"] = (
+    df["pipeline"]
+    * np.random.uniform(0.85, 1.15)
+)
+
+# =========================
+# MACRO FEATURES
+# =========================
+cpi = np.linspace(100, 120, n_months)
+
+gdp = np.random.normal(2, 0.5, n_months)
+
+df["CPI"] = np.tile(
+    cpi,
+    len(brands) * len(orgs)
+)
+
+df["GDP_growth"] = np.tile(
+    gdp,
+    len(brands) * len(orgs)
+)
+
+# =========================
+# FEATURE ENGINEERING
+# =========================
+
+# Lag features
+df["revenue_lag_1"] = (
+    df.groupby(
+        ["product_brand", "store_id"]
+    )["revenue"]
+    .shift(1)
+)
+
+df["revenue_lag_3"] = (
+    df.groupby(
+        ["product_brand", "store_id"]
+    )["revenue"]
+    .shift(3)
+)
+
+df["revenue_lag_12"] = (
+    df.groupby(
+        ["product_brand", "store_id"]
+    )["revenue"]
+    .shift(12)
+)
+
+# Rolling average
+df["revenue_roll_3"] = (
+    df.groupby(
+        ["product_brand", "store_id"]
+    )["revenue"]
+    .rolling(3)
+    .mean()
+    .reset_index(0, drop=True)
+)
+
+# Pipeline lag
+df["pipeline_lag_1"] = (
+    df.groupby(
+        ["product_brand", "store_id"]
+    )["pipeline"]
+    .shift(1)
+)
+
+# =========================
+# DATE FEATURES
+# =========================
+df["month"] = df["date"].dt.month
+df["quarter"] = df["date"].dt.quarter
+df["year"] = df["date"].dt.year
+
+# =========================
+# REMOVE NULLS
+# =========================
+df = df.dropna()
+
+# =========================
+# SORT DATA
+# =========================
+df = df.sort_values(
+    by=["store_id", "product_brand", "date"]
+)
+
+# =========================
+# SAVE DATASET
+# =========================
+df.to_csv(
+    "revenue_demo_dataset.csv",
+    index=False
+)
+
+# =========================
+# OUTPUT
+# =========================
+print("Dataset generated successfully!")
+print("Dataset shape:", df.shape)
+
+print("\nSample data:")
+print(df.head())
