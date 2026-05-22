@@ -1,218 +1,45 @@
-import pandas as pd
-import numpy as np
-
-# Reproducibility
-np.random.seed(42)
-
-# =========================
-# CONFIGURATION
-# =========================
-n_brands = 6
-n_orgs = 44
-n_months = 48
-
-dates = pd.date_range(
-    start="2021-01-01",
-    periods=n_months,
-    freq="MS"
-)
-
-brands = [f"Brand_{i}" for i in range(1, n_brands + 1)]
-orgs = [f"Store_{i}" for i in range(1, n_orgs + 1)]
-
-data = []
-
-# =========================
-# GENERATE SYNTHETIC DATA
-# =========================
-for brand in brands:
-    for org in orgs:
-
-        # Base revenue
-        base = np.random.uniform(500, 2000)
-
-        # Growth trend
-        slope = np.random.uniform(-5, 10)
-
-        # Seasonality pattern
-        seasonality = (
-            np.sin(np.arange(n_months) * 2 * np.pi / 12)
-            * np.random.uniform(50, 200)
-        )
-
-        # Random noise
-        noise = np.random.normal(0, 50, n_months)
-
-        # Revenue series
-        revenue_series = (
-            base
-            + slope * np.arange(n_months)
-            + seasonality
-            + noise
-        )
-
-        # Ensure revenue is positive
-        revenue_series = np.maximum(revenue_series, 50)
-
-        # Create rows
-        for i in range(n_months):
-
-            promotion = np.random.choice(
-                [0, 1],
-                p=[0.8, 0.2]
-            )
-
-            holiday = np.random.choice(
-                [0, 1],
-                p=[0.9, 0.1]
-            )
-
-            inventory = np.random.randint(100, 1000)
-
-            revenue = revenue_series[i]
-
-            # Promotion impact
-            if promotion == 1:
-                revenue *= 1.25
-
-            # Holiday impact
-            if holiday == 1:
-                revenue *= 1.15
-
-            data.append([
-                dates[i],
-                brand,
-                org,
-                round(revenue, 2),
-                promotion,
-                holiday,
-                inventory
-            ])
-
-# =========================
-# CREATE DATAFRAME
-# =========================
-df = pd.DataFrame(
-    data,
-    columns=[
-        "date",
-        "product_brand",
-        "store_id",
-        "revenue",
-        "promotion",
-        "holiday",
-        "inventory"
+{
+  "input_data": {
+    "columns": [
+      "date",
+      "product_brand",
+      "store_id",
+      "promotion",
+      "holiday",
+      "inventory",
+      "pipeline",
+      "CPI",
+      "GDP_growth",
+      "revenue_lag_1",
+      "revenue_lag_3",
+      "revenue_lag_12",
+      "revenue_roll_3",
+      "pipeline_lag_1",
+      "month",
+      "quarter",
+      "year"
+    ],
+    "data": [
+      [
+        "2026-06-01",
+        "Brand_1",
+        "Store_1",
+        1,
+        0,
+        500,
+        1500,
+        118,
+        2.5,
+        1200,
+        1150,
+        1000,
+        1180,
+        1400,
+        6,
+        2,
+        2026
+      ]
     ]
-)
-
-# =========================
-# PIPELINE FEATURE
-# =========================
-df["pipeline"] = (
-    df.groupby(
-        ["product_brand", "store_id"]
-    )["revenue"]
-    .shift(-1)
-)
-
-df["pipeline"] = (
-    df["pipeline"]
-    * np.random.uniform(0.85, 1.15)
-)
-
-# =========================
-# MACRO FEATURES
-# =========================
-cpi = np.linspace(100, 120, n_months)
-
-gdp = np.random.normal(2, 0.5, n_months)
-
-df["CPI"] = np.tile(
-    cpi,
-    len(brands) * len(orgs)
-)
-
-df["GDP_growth"] = np.tile(
-    gdp,
-    len(brands) * len(orgs)
-)
-
-# =========================
-# FEATURE ENGINEERING
-# =========================
-
-# Lag features
-df["revenue_lag_1"] = (
-    df.groupby(
-        ["product_brand", "store_id"]
-    )["revenue"]
-    .shift(1)
-)
-
-df["revenue_lag_3"] = (
-    df.groupby(
-        ["product_brand", "store_id"]
-    )["revenue"]
-    .shift(3)
-)
-
-df["revenue_lag_12"] = (
-    df.groupby(
-        ["product_brand", "store_id"]
-    )["revenue"]
-    .shift(12)
-)
-
-# Rolling average
-df["revenue_roll_3"] = (
-    df.groupby(
-        ["product_brand", "store_id"]
-    )["revenue"]
-    .rolling(3)
-    .mean()
-    .reset_index(0, drop=True)
-)
-
-# Pipeline lag
-df["pipeline_lag_1"] = (
-    df.groupby(
-        ["product_brand", "store_id"]
-    )["pipeline"]
-    .shift(1)
-)
-
-# =========================
-# DATE FEATURES
-# =========================
-df["month"] = df["date"].dt.month
-df["quarter"] = df["date"].dt.quarter
-df["year"] = df["date"].dt.year
-
-# =========================
-# REMOVE NULLS
-# =========================
-df = df.dropna()
-
-# =========================
-# SORT DATA
-# =========================
-df = df.sort_values(
-    by=["store_id", "product_brand", "date"]
-)
-
-# =========================
-# SAVE DATASET
-# =========================
-df.to_csv(
-    "revenue_demo_dataset.csv",
-    index=False
-)
-
-# =========================
-# OUTPUT
-# =========================
-print("Dataset generated successfully!")
-print("Dataset shape:", df.shape)
-
-print("\nSample data:")
-print(df.head())
+  },
+  "params": {}
+}
