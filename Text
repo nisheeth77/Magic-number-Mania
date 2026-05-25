@@ -1,45 +1,59 @@
-{
-  "input_data": {
-    "columns": [
-      "date",
-      "product_brand",
-      "store_id",
-      "promotion",
-      "holiday",
-      "inventory",
-      "pipeline",
-      "CPI",
-      "GDP_growth",
-      "revenue_lag_1",
-      "revenue_lag_3",
-      "revenue_lag_12",
-      "revenue_roll_3",
-      "pipeline_lag_1",
-      "month",
-      "quarter",
-      "year"
-    ],
-    "data": [
-      [
-        "2026-06-01",
-        "Brand_1",
-        "Store_1",
-        1,
-        0,
-        500,
-        1500,
-        118,
-        2.5,
-        1200,
-        1150,
-        1000,
-        1180,
-        1400,
-        6,
-        2,
-        2026
-      ]
-    ]
-  },
-  "params": {}
-}
+openapi: 3.0.0
+info:
+  title: Sales Forecast API
+  description: Predicts future revenue and sales using ML model
+  version: 1.0.0
+
+servers:
+  - url: https://your-ml-endpoint.azurewebsites.net
+
+paths:
+
+  /forecast:
+    post:
+      operationId: getSalesForecast
+      summary: Predict future sales/revenue
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                store_id:
+                  type: string
+                product_id:
+                  type: string
+                forecast_days:
+                  type: integer
+                  example: 7
+                historical_sales:
+                  type: array
+                  items:
+                    type: number
+      responses:
+        "200":
+          description: Forecast generated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  forecast:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        date:
+                          type: string
+                        predicted_sales:
+                          type: number
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key
