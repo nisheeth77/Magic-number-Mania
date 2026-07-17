@@ -26,3 +26,38 @@ configure_azure_monitor(
 enable_instrumentation(enable_sensitive_data=False)
 
 print("MAF tracing enabled")
+
+___________________________________________________________
+APPLICATION_INSIGHTS_CONNECTION_STRING=InstrumentationKey=YOUR_KEY;IngestionEndpoint=YOUR_ENDPOINT
+OTEL_SERVICE_NAME=maf-copilot-orchestrator
+
+
+____________________________________________________________
+
+import tracing
+import asyncio
+
+from agent_framework import WorkflowBuilder
+from executors import HRAgent, ITAgent
+
+
+async def main():
+    hr = HRAgent(id="hr")
+    it = ITAgent(id="it")
+
+    workflow = (
+        WorkflowBuilder(
+            start_executor=hr,
+            name="HR and IT Workflow",
+            output_from="all",
+        )
+        .add_edge(hr, it)
+        .build()
+    )
+
+    result = await workflow.run("Hello from HR")
+    print(result)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
