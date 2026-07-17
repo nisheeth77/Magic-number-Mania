@@ -24,26 +24,24 @@ async def main() -> None:
     if not project_name:
         raise ValueError("PROJECT_NAME is missing from .env")
 
-    # AgentSessionConfig is a typed dictionary, not a class constructor.
     agent_config: AgentSessionConfig = {
         "agent_name": agent_name,
         "project_name": project_name,
-        "agent_version": agent_version or None,
     }
+
+    if agent_version:
+        agent_config["agent_version"] = agent_version
 
     credential = AzureCliCredential()
 
     try:
         print("Connecting to the DU voice agent...")
-        print(f"Agent: {agent_name}")
-        print(f"Project: {project_name}")
-        print(f"Version: {agent_version or 'latest'}")
 
         async with connect(
             endpoint=endpoint,
             credential=credential,
-            api_version="2026-01-01-preview",
             agent_config=agent_config,
+            api_version="2026-04-10",
         ):
             print("Connection successful.")
 
