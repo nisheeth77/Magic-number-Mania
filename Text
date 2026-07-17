@@ -1,105 +1,243 @@
-import tracing  # Must stay first
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
 
-import asyncio
-from opentelemetry import trace
+body {
+    min-height: 100vh;
+    font-family: Arial, Helvetica, sans-serif;
+    background: linear-gradient(135deg, #f4f7fb, #e8edf5);
+}
 
-from agent_framework import WorkflowBuilder
-from executors import HRAgent, ITAgent
+.app-container {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+}
+
+.agent-card {
+    width: 100%;
+    max-width: 440px;
+    padding: 42px 32px;
+    background: white;
+    border-radius: 24px;
+    text-align: center;
+    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.12);
+}
+
+.status-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    margin-bottom: 28px;
+    font-size: 14px;
+    color: #536173;
+}
+
+.status-dot {
+    width: 10px;
+    height: 10px;
+    background: #25b46b;
+    border-radius: 50%;
+}
+
+.avatar {
+    width: 130px;
+    height: 130px;
+    margin: 0 auto 22px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(135deg, #00a7ce, #164194);
+    color: white;
+    font-size: 36px;
+    font-weight: bold;
+    box-shadow: 0 10px 30px rgba(22, 65, 148, 0.25);
+}
+
+h1 {
+    margin-bottom: 10px;
+    color: #172033;
+    font-size: 28px;
+}
+
+.subtitle {
+    color: #68758a;
+    line-height: 1.5;
+}
+
+.conversation {
+    min-height: 90px;
+    margin: 28px 0;
+    padding: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #f6f8fb;
+    border-radius: 16px;
+    color: #4d596c;
+    line-height: 1.5;
+}
+
+.call-button {
+    width: 100%;
+    padding: 16px;
+    border: none;
+    border-radius: 14px;
+    background: #164194;
+    color: white;
+    font-size: 17px;
+    font-weight: bold;
+    cursor: pointer;
+    transition: transform 0.2s, opacity 0.2s;
+}
+
+.call-button:hover {
+    transform: translateY(-2px);
+    opacity: 0.92;
+}
+
+.call-button.end-call {
+    background: #d93d4a;
+}
+
+.privacy-note {
+    margin-top: 18px;
+    color: #8b95a5;
+    font-size: 12px;
+}
 
 
-async def main():
-    hr = HRAgent(id="hr")
-    it = ITAgent(id="it")
 
-    workflow = (
-        WorkflowBuilder(
-            start_executor=hr,
-            name="HR and IT Workflow",
-        )
-        .add_edge(hr, it)
-        .build()
+___________________________________________________
+
+
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>DU Virtual Support</title>
+
+    <link
+        rel="stylesheet"
+        href="{{ url_for('static', path='/style.css') }}"
+    >
+</head>
+
+<body>
+    <main class="app-container">
+
+        <section class="agent-card">
+
+            <div class="status-row">
+                <span class="status-dot"></span>
+                <span id="connectionStatus">Ready</span>
+            </div>
+
+            <div class="avatar">
+                <span>DU</span>
+            </div>
+
+            <h1>DU Virtual Support</h1>
+
+            <p class="subtitle">
+                Your AI-powered customer support assistant
+            </p>
+
+            <div class="conversation">
+                <p id="message">
+                    Press Start Call to speak with the support agent.
+                </p>
+            </div>
+
+            <button id="callButton" class="call-button">
+                Start Call
+            </button>
+
+            <p class="privacy-note">
+                Your microphone will only be used during the active call.
+            </p>
+
+        </section>
+
+    </main>
+
+    <script>
+        const callButton = document.getElementById("callButton");
+        const statusText = document.getElementById("connectionStatus");
+        const message = document.getElementById("message");
+
+        let callActive = false;
+
+        callButton.addEventListener("click", () => {
+            callActive = !callActive;
+
+            if (callActive) {
+                callButton.textContent = "End Call";
+                callButton.classList.add("end-call");
+
+                statusText.textContent = "Call connected";
+                message.textContent =
+                    "Voice connection will be added in the next step.";
+            } else {
+                callButton.textContent = "Start Call";
+                callButton.classList.remove("end-call");
+
+                statusText.textContent = "Ready";
+                message.textContent =
+                    "Press Start Call to speak with the support agent.";
+            }
+        });
+    </script>
+</body>
+</html>
+
+
+___________________________________________________________________________________
+
+
+
+from pathlib import Path
+
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+
+
+BASE_DIR = Path(__file__).resolve().parent
+
+app = FastAPI(title="DU Voice Support Agent")
+
+app.mount(
+    "/static",
+    StaticFiles(directory=BASE_DIR / "static"),
+    name="static",
+)
+
+templates = Jinja2Templates(directory=BASE_DIR / "templates")
+
+
+@app.get("/", response_class=HTMLResponse)
+async def home(request: Request):
+    return templates.TemplateResponse(
+        request=request,
+        name="index.html",
+        context={},
     )
 
-    result = await workflow.run("Hello from HR")
-    print(result)
 
-    # Force pending telemetry to Application Insights
-    provider = trace.get_tracer_provider()
-
-    if hasattr(provider, "force_flush"):
-        provider.force_flush(timeout_millis=10000)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
-
-
-____________________________________________________________________________
-
-
-from opentelemetry import trace
-
-from agent_framework import Executor, WorkflowContext, handler
-from hr_agent import HRAgent as HRCopilotAgent
-
-
-tracer = trace.get_tracer("maf-copilot-orchestrator")
-
-
-class HRAgent(Executor):
-    def __init__(self, id: str):
-        super().__init__(id=id)
-        self.hr_agent = HRCopilotAgent()
-
-    @handler
-    async def process(
-        self,
-        message: str,
-        context: WorkflowContext[str],
-    ) -> None:
-        print("Calling Copilot Studio HR Agent...")
-
-        with tracer.start_as_current_span(
-            "copilotstudio.hr.invoke"
-        ) as span:
-            span.set_attribute("copilotstudio.prompt", message)
-
-            try:
-                response = await self.hr_agent.ask(message)
-                response_text = str(response)
-
-                span.set_attribute(
-                    "copilotstudio.response",
-                    response_text,
-                )
-                span.set_attribute(
-                    "copilotstudio.status",
-                    "success",
-                )
-
-                await context.yield_output(response_text)
-
-            except Exception as error:
-                span.set_attribute(
-                    "copilotstudio.status",
-                    "failed",
-                )
-                span.record_exception(error)
-                span.set_status(
-                    trace.Status(
-                        trace.StatusCode.ERROR,
-                        str(error),
-                    )
-                )
-                raise
-
-
-class ITAgent(Executor):
-    @handler
-    async def process(
-        self,
-        message: str,
-        context: WorkflowContext[str],
-    ) -> None:
-        print("Processing ITAgentExecutor...")
-        await context.yield_output(f"IT Response: {message}")
+@app.get("/health")
+async def health():
+    return {"status": "healthy"}
