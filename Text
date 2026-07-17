@@ -1,26 +1,23 @@
-from agent_framework import Executor
-from agent_framework_copilotstudio import CopilotStudioAgent
+from agent_framework import Executor, WorkflowContext, handler
+from hr_agent import HRAgent as HRCopilotAgent
 
 
-class HRExecutor(Executor):
+class HRAgent(Executor):
+    def __init__(self, id: str):
+        super().__init__(id=id)
+        self.hr_agent = HRCopilotAgent()
 
-    def __init__(self):
-        super().__init__(id="hr")
+    @handler
+    async def process(self, message: str, context: WorkflowContext[str]):
+        print("Calling Copilot Studio HR Agent...")
 
-        self.agent = CopilotStudioAgent(
-            environment_id="YOUR_ENVIRONMENT_ID",
-            agent_identifier="YOUR_AGENT_IDENTIFIER",
-            client_id="YOUR_CLIENT_ID",
-            tenant_id="YOUR_TENANT_ID",
-        )
+        response = await self.hr_agent.ask(message)
 
-    async def execute(self, message, context):
+        await context.yield_output(str(response))
 
-        print("Calling HR Copilot Studio Agent...")
 
-        response = await self.agent.run(message)
-
-        print("HR Agent Response:")
-        print(response)
-
-        await context.yield_output(response)
+class ITAgent(Executor):
+    @handler
+    async def process(self, message: str, context: WorkflowContext[str]):
+        print("Processing ITAgentExecutor...")
+        await context.yield_output(f"IT Response: {message}")
