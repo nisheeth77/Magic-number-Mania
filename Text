@@ -1,243 +1,78 @@
-* {
-    box-sizing: border-box;
-    margin: 0;
-    padding: 0;
-}
+PROJECT_ENDPOINT=
+PROJECT_NAME=du-telco
 
-body {
-    min-height: 100vh;
-    font-family: Arial, Helvetica, sans-serif;
-    background: linear-gradient(135deg, #f4f7fb, #e8edf5);
-}
+AGENT_NAME=VoiceAgentDUTelco
+AGENT_VERSION=23
 
-.app-container {
-    min-height: 100vh;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 24px;
-}
-
-.agent-card {
-    width: 100%;
-    max-width: 440px;
-    padding: 42px 32px;
-    background: white;
-    border-radius: 24px;
-    text-align: center;
-    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.12);
-}
-
-.status-row {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    margin-bottom: 28px;
-    font-size: 14px;
-    color: #536173;
-}
-
-.status-dot {
-    width: 10px;
-    height: 10px;
-    background: #25b46b;
-    border-radius: 50%;
-}
-
-.avatar {
-    width: 130px;
-    height: 130px;
-    margin: 0 auto 22px;
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: linear-gradient(135deg, #00a7ce, #164194);
-    color: white;
-    font-size: 36px;
-    font-weight: bold;
-    box-shadow: 0 10px 30px rgba(22, 65, 148, 0.25);
-}
-
-h1 {
-    margin-bottom: 10px;
-    color: #172033;
-    font-size: 28px;
-}
-
-.subtitle {
-    color: #68758a;
-    line-height: 1.5;
-}
-
-.conversation {
-    min-height: 90px;
-    margin: 28px 0;
-    padding: 20px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: #f6f8fb;
-    border-radius: 16px;
-    color: #4d596c;
-    line-height: 1.5;
-}
-
-.call-button {
-    width: 100%;
-    padding: 16px;
-    border: none;
-    border-radius: 14px;
-    background: #164194;
-    color: white;
-    font-size: 17px;
-    font-weight: bold;
-    cursor: pointer;
-    transition: transform 0.2s, opacity 0.2s;
-}
-
-.call-button:hover {
-    transform: translateY(-2px);
-    opacity: 0.92;
-}
-
-.call-button.end-call {
-    background: #d93d4a;
-}
-
-.privacy-note {
-    margin-top: 18px;
-    color: #8b95a5;
-    font-size: 12px;
-}
+VOICELIVE_ENDPOINT=
+VOICELIVE_API_VERSION=2026-04-10
 
 
 
-___________________________________________________
+________________________________________________
 
 
+import asyncio
+import os
 
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta
-        name="viewport"
-        content="width=device-width, initial-scale=1.0"
-    >
+from azure.identity.aio import AzureCliCredential
+from dotenv import load_dotenv
 
-    <title>DU Virtual Support</title>
-
-    <link
-        rel="stylesheet"
-        href="{{ url_for('static', path='/style.css') }}"
-    >
-</head>
-
-<body>
-    <main class="app-container">
-
-        <section class="agent-card">
-
-            <div class="status-row">
-                <span class="status-dot"></span>
-                <span id="connectionStatus">Ready</span>
-            </div>
-
-            <div class="avatar">
-                <span>DU</span>
-            </div>
-
-            <h1>DU Virtual Support</h1>
-
-            <p class="subtitle">
-                Your AI-powered customer support assistant
-            </p>
-
-            <div class="conversation">
-                <p id="message">
-                    Press Start Call to speak with the support agent.
-                </p>
-            </div>
-
-            <button id="callButton" class="call-button">
-                Start Call
-            </button>
-
-            <p class="privacy-note">
-                Your microphone will only be used during the active call.
-            </p>
-
-        </section>
-
-    </main>
-
-    <script>
-        const callButton = document.getElementById("callButton");
-        const statusText = document.getElementById("connectionStatus");
-        const message = document.getElementById("message");
-
-        let callActive = false;
-
-        callButton.addEventListener("click", () => {
-            callActive = !callActive;
-
-            if (callActive) {
-                callButton.textContent = "End Call";
-                callButton.classList.add("end-call");
-
-                statusText.textContent = "Call connected";
-                message.textContent =
-                    "Voice connection will be added in the next step.";
-            } else {
-                callButton.textContent = "Start Call";
-                callButton.classList.remove("end-call");
-
-                statusText.textContent = "Ready";
-                message.textContent =
-                    "Press Start Call to speak with the support agent.";
-            }
-        });
-    </script>
-</body>
-</html>
+from azure.ai.voicelive.aio import AgentSessionConfig, connect
 
 
-___________________________________________________________________________________
+load_dotenv()
 
 
+async def test_connection() -> None:
+    endpoint = os.getenv("VOICELIVE_ENDPOINT")
+    project_name = os.getenv("PROJECT_NAME")
+    agent_name = os.getenv("AGENT_NAME")
+    agent_version = os.getenv("AGENT_VERSION")
+    api_version = os.getenv("VOICELIVE_API_VERSION", "2026-04-10")
 
-from pathlib import Path
+    required_values = {
+        "VOICELIVE_ENDPOINT": endpoint,
+        "PROJECT_NAME": project_name,
+        "AGENT_NAME": agent_name,
+    }
 
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
+    missing = [
+        name
+        for name, value in required_values.items()
+        if not value
+    ]
 
+    if missing:
+        raise ValueError(
+            f"Missing environment variables: {', '.join(missing)}"
+        )
 
-BASE_DIR = Path(__file__).resolve().parent
+    credential = AzureCliCredential()
 
-app = FastAPI(title="DU Voice Support Agent")
-
-app.mount(
-    "/static",
-    StaticFiles(directory=BASE_DIR / "static"),
-    name="static",
-)
-
-templates = Jinja2Templates(directory=BASE_DIR / "templates")
-
-
-@app.get("/", response_class=HTMLResponse)
-async def home(request: Request):
-    return templates.TemplateResponse(
-        request=request,
-        name="index.html",
-        context={},
+    agent_config = AgentSessionConfig(
+        agent_name=agent_name,
+        project_name=project_name,
+        agent_version=agent_version or None,
     )
 
+    try:
+        print("Connecting to Voice Live...")
+        print(f"Agent: {agent_name}")
+        print(f"Project: {project_name}")
+        print(f"Version: {agent_version or 'latest'}")
 
-@app.get("/health")
-async def health():
-    return {"status": "healthy"}
+        async with connect(
+            endpoint=endpoint,
+            credential=credential,
+            agent_config=agent_config,
+            api_version=api_version,
+        ):
+            print("Successfully connected to the Foundry voice agent.")
+
+    finally:
+        await credential.close()
+
+
+if __name__ == "__main__":
+    asyncio.run(test_connection())
