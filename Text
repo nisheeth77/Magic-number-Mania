@@ -1,23 +1,28 @@
-from agent_framework import Executor, WorkflowContext, handler
-from hr_agent import HRAgent as HRCopilotAgent
+import os
 
+from agent_framework.observability import (
+    create_resource,
+    enable_instrumentation,
+)
+from azure.monitor.opentelemetry import configure_azure_monitor
+from dotenv import load_dotenv
 
-class HRAgent(Executor):
-    def __init__(self, id: str):
-        super().__init__(id=id)
-        self.hr_agent = HRCopilotAgent()
+load_dotenv()
 
-    @handler
-    async def process(self, message: str, context: WorkflowContext[str]):
-        print("Calling Copilot Studio HR Agent...")
+connection_string = os.getenv("APPLICATION_INSIGHTS_CONNECTION_STRING")
 
-        response = await self.hr_agent.ask(message)
+if not connection_string:
+    raise ValueError(
+        "APPLICATION_INSIGHTS_CONNECTION_STRING is missing from .env"
+    )
 
-        await context.yield_output(str(response))
+configure_azure_monitor(
+    connection_string=connection_string,
+    resource=create_resource(),
+    enable_live_metrics=True,
+)
 
+# Enables MAF workflow and executor spans
+enable_instrumentation(enable_sensitive_data=False)
 
-class ITAgent(Executor):
-    @handler
-    async def process(self, message: str, context: WorkflowContext[str]):
-        print("Processing ITAgentExecutor...")
-        await context.yield_output(f"IT Response: {message}")
+print("MAF tracing enabled")
