@@ -1,32 +1,31 @@
-from agent_framework import Executor, WorkflowContext, handler
-from hr_agent import HRAgent as HRCopilotAgent
+import tracing  # Must be imported first to enable MAF tracing
+
+import asyncio
+
+from agent_framework import WorkflowBuilder
+from executors import HRAgent, ITAgent
 
 
-class HRAgent(Executor):
-    def __init__(self, id: str):
-        super().__init__(id=id)
-        self.hr_agent = HRCopilotAgent()
+async def main():
+    # Create workflow executors
+    hr = HRAgent(id="hr")
+    it = ITAgent(id="it")
 
-    @handler
-    async def process(
-        self,
-        message: str,
-        context: WorkflowContext[str],
-    ) -> None:
-        print("Calling Copilot Studio HR Agent...")
+    # Build the MAF workflow
+    workflow = (
+        WorkflowBuilder(
+            start_executor=hr,
+            name="HR and IT Workflow",
+        )
+        .add_edge(hr, it)
+        .build()
+    )
 
-        response = await self.hr_agent.ask(message)
+    # Run the workflow
+    result = await workflow.run("Hello from HR")
 
-        await context.yield_output(str(response))
+    print(result)
 
 
-class ITAgent(Executor):
-    @handler
-    async def process(
-        self,
-        message: str,
-        context: WorkflowContext[str],
-    ) -> None:
-        print("Processing IT Agent...")
-
-        await context.yield_output(f"IT Response: {message}")
+if __name__ == "__main__":
+    asyncio.run(main())
