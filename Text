@@ -1,10 +1,5 @@
-from opentelemetry import trace
-
 from agent_framework import Executor, WorkflowContext, handler
 from hr_agent import HRAgent as HRCopilotAgent
-
-
-tracer = trace.get_tracer("maf-orchestrator")
 
 
 class HRAgent(Executor):
@@ -18,51 +13,11 @@ class HRAgent(Executor):
         message: str,
         context: WorkflowContext[str],
     ) -> None:
-
         print("Calling Copilot Studio HR Agent...")
 
-        with tracer.start_as_current_span(
-            "copilotstudio.hr.invoke"
-        ) as span:
+        response = await self.hr_agent.ask(message)
 
-            # Store prompt in Application Insights
-            span.set_attribute(
-                "copilotstudio.prompt",
-                message,
-            )
-
-            try:
-                response = await self.hr_agent.ask(message)
-                response_text = str(response)
-
-                # Store response in Application Insights
-                span.set_attribute(
-                    "copilotstudio.response",
-                    response_text,
-                )
-
-                span.set_attribute(
-                    "copilotstudio.call_status",
-                    "success",
-                )
-
-                await context.yield_output(response_text)
-
-            except Exception as error:
-                span.set_attribute(
-                    "copilotstudio.call_status",
-                    "failed",
-                )
-
-                span.record_exception(error)
-                span.set_status(
-                    trace.Status(
-                        trace.StatusCode.ERROR,
-                        str(error),
-                    )
-                )
-
-                raise
+        await context.yield_output(str(response))
 
 
 class ITAgent(Executor):
@@ -72,9 +27,4 @@ class ITAgent(Executor):
         message: str,
         context: WorkflowContext[str],
     ) -> None:
-
-        print("Processing IT Agent...")
-
-        await context.yield_output(
-            f"IT Response: {message}"
-        )
+        await context.yield_output(f"IT Response: {message}")
