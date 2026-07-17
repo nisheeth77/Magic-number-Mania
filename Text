@@ -1,31 +1,17 @@
-import tracing  # Must be imported first to enable MAF tracing
+import os
+from dotenv import load_dotenv
+from azure.monitor.opentelemetry import configure_azure_monitor
+from agent_framework.observability import enable_instrumentation
 
-import asyncio
+load_dotenv()
 
-from agent_framework import WorkflowBuilder
-from executors import HRAgent, ITAgent
+connection_string = os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING")
 
+if not connection_string:
+    raise ValueError("Application Insights connection string is missing")
 
-async def main():
-    # Create workflow executors
-    hr = HRAgent(id="hr")
-    it = ITAgent(id="it")
+configure_azure_monitor(connection_string=connection_string)
 
-    # Build the MAF workflow
-    workflow = (
-        WorkflowBuilder(
-            start_executor=hr,
-            name="HR and IT Workflow",
-        )
-        .add_edge(hr, it)
-        .build()
-    )
+enable_instrumentation(enable_sensitive_data=False)
 
-    # Run the workflow
-    result = await workflow.run("Hello from HR")
-
-    print(result)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+print("MAF tracing enabled")
