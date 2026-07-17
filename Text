@@ -1,17 +1,80 @@
-import os
-from dotenv import load_dotenv
-from azure.monitor.opentelemetry import configure_azure_monitor
-from agent_framework.observability import enable_instrumentation
+from opentelemetry import trace
 
-load_dotenv()
+from agent_framework import Executor, WorkflowContext, handler
+from hr_agent import HRAgent as HRCopilotAgent
 
-connection_string = os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING")
 
-if not connection_string:
-    raise ValueError("Application Insights connection string is missing")
+tracer = trace.get_tracer("maf-orchestrator")
 
-configure_azure_monitor(connection_string=connection_string)
 
-enable_instrumentation(enable_sensitive_data=False)
+class HRAgent(Executor):
+    def __init__(self, id: str):
+        super().__init__(id=id)
+        self.hr_agent = HRCopilotAgent()
 
-print("MAF tracing enabled")
+    @handler
+    async def process(
+        self,
+        message: str,
+        context: WorkflowContext[str],
+    ) -> None:
+
+        print("Calling Copilot Studio HR Agent...")
+
+        with tracer.start_as_current_span(
+            "copilotstudio.hr.invoke"
+        ) as span:
+
+            # Store prompt in Application Insights
+            span.set_attribute(
+                "copilotstudio.prompt",
+                message,
+            )
+
+            try:
+                response = await self.hr_agent.ask(message)
+                response_text = str(response)
+
+                # Store response in Application Insights
+                span.set_attribute(
+                    "copilotstudio.response",
+                    response_text,
+                )
+
+                span.set_attribute(
+                    "copilotstudio.call_status",
+                    "success",
+                )
+
+                await context.yield_output(response_text)
+
+            except Exception as error:
+                span.set_attribute(
+                    "copilotstudio.call_status",
+                    "failed",
+                )
+
+                span.record_exception(error)
+                span.set_status(
+                    trace.Status(
+                        trace.StatusCode.ERROR,
+                        str(error),
+                    )
+                )
+
+                raise
+
+
+class ITAgent(Executor):
+    @handler
+    async def process(
+        self,
+        message: str,
+        context: WorkflowContext[str],
+    ) -> None:
+
+        print("Processing IT Agent...")
+
+        await context.yield_output(
+            f"IT Response: {message}"
+        )
