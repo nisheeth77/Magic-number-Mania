@@ -1,63 +1,40 @@
-PROJECT_ENDPOINT=
-PROJECT_NAME=du-telco
-
-AGENT_NAME=VoiceAgentDUTelco
-AGENT_VERSION=23
-
-VOICELIVE_ENDPOINT=
-VOICELIVE_API_VERSION=2026-04-10
-
-
-
-________________________________________________
-
-
 import asyncio
 import os
 
+from azure.ai.voicelive.aio import AgentSessionConfig, connect
 from azure.identity.aio import AzureCliCredential
 from dotenv import load_dotenv
-
-from azure.ai.voicelive.aio import AgentSessionConfig, connect
 
 
 load_dotenv()
 
 
-async def test_connection() -> None:
+async def main() -> None:
     endpoint = os.getenv("VOICELIVE_ENDPOINT")
-    project_name = os.getenv("PROJECT_NAME")
     agent_name = os.getenv("AGENT_NAME")
+    project_name = os.getenv("PROJECT_NAME")
     agent_version = os.getenv("AGENT_VERSION")
-    api_version = os.getenv("VOICELIVE_API_VERSION", "2026-04-10")
 
-    required_values = {
-        "VOICELIVE_ENDPOINT": endpoint,
-        "PROJECT_NAME": project_name,
-        "AGENT_NAME": agent_name,
+    if not endpoint:
+        raise ValueError("VOICELIVE_ENDPOINT is missing from .env")
+
+    if not agent_name:
+        raise ValueError("AGENT_NAME is missing from .env")
+
+    if not project_name:
+        raise ValueError("PROJECT_NAME is missing from .env")
+
+    # AgentSessionConfig is a typed dictionary, not a class constructor.
+    agent_config: AgentSessionConfig = {
+        "agent_name": agent_name,
+        "project_name": project_name,
+        "agent_version": agent_version or None,
     }
-
-    missing = [
-        name
-        for name, value in required_values.items()
-        if not value
-    ]
-
-    if missing:
-        raise ValueError(
-            f"Missing environment variables: {', '.join(missing)}"
-        )
 
     credential = AzureCliCredential()
 
-    agent_config = AgentSessionConfig(
-        agent_name=agent_name,
-        project_name=project_name,
-        agent_version=agent_version or None,
-    )
-
     try:
-        print("Connecting to Voice Live...")
+        print("Connecting to the DU voice agent...")
         print(f"Agent: {agent_name}")
         print(f"Project: {project_name}")
         print(f"Version: {agent_version or 'latest'}")
@@ -65,14 +42,14 @@ async def test_connection() -> None:
         async with connect(
             endpoint=endpoint,
             credential=credential,
+            api_version="2026-01-01-preview",
             agent_config=agent_config,
-            api_version=api_version,
         ):
-            print("Successfully connected to the Foundry voice agent.")
+            print("Connection successful.")
 
     finally:
         await credential.close()
 
 
 if __name__ == "__main__":
-    asyncio.run(test_connection())
+    asyncio.run(main())
