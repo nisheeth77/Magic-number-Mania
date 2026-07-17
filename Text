@@ -1,35 +1,26 @@
-import asyncio
-from dotenv import load_dotenv
+from agent_framework import Executor
 from agent_framework_copilotstudio import CopilotStudioAgent
 
-load_dotenv()
 
-
-class HRAgent:
+class HRExecutor(Executor):
 
     def __init__(self):
+        super().__init__(id="hr")
+
         self.agent = CopilotStudioAgent(
             environment_id="YOUR_ENVIRONMENT_ID",
             agent_identifier="YOUR_AGENT_IDENTIFIER",
             client_id="YOUR_CLIENT_ID",
-            tenant_id="YOUR_TENANT_ID"
+            tenant_id="YOUR_TENANT_ID",
         )
 
-    async def ask(self, question: str):
-        response = await self.agent.run(question)
-        return response
+    async def execute(self, message, context):
 
+        print("Calling HR Copilot Studio Agent...")
 
-async def main():
+        response = await self.agent.run(message)
 
-    hr = HRAgent()
+        print("HR Agent Response:")
+        print(response)
 
-    response = await hr.ask(
-        "How many casual leaves do I have?"
-    )
-
-    print(response)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+        await context.yield_output(response)
