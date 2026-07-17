@@ -1,5 +1,49 @@
+import tracing  # Must stay first
+
+import asyncio
+from opentelemetry import trace
+
+from agent_framework import WorkflowBuilder
+from executors import HRAgent, ITAgent
+
+
+async def main():
+    hr = HRAgent(id="hr")
+    it = ITAgent(id="it")
+
+    workflow = (
+        WorkflowBuilder(
+            start_executor=hr,
+            name="HR and IT Workflow",
+        )
+        .add_edge(hr, it)
+        .build()
+    )
+
+    result = await workflow.run("Hello from HR")
+    print(result)
+
+    # Force pending telemetry to Application Insights
+    provider = trace.get_tracer_provider()
+
+    if hasattr(provider, "force_flush"):
+        provider.force_flush(timeout_millis=10000)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
+
+____________________________________________________________________________
+
+
+from opentelemetry import trace
+
 from agent_framework import Executor, WorkflowContext, handler
 from hr_agent import HRAgent as HRCopilotAgent
+
+
+tracer = trace.get_tracer("maf-copilot-orchestrator")
 
 
 class HRAgent(Executor):
@@ -15,9 +59,39 @@ class HRAgent(Executor):
     ) -> None:
         print("Calling Copilot Studio HR Agent...")
 
-        response = await self.hr_agent.ask(message)
+        with tracer.start_as_current_span(
+            "copilotstudio.hr.invoke"
+        ) as span:
+            span.set_attribute("copilotstudio.prompt", message)
 
-        await context.yield_output(str(response))
+            try:
+                response = await self.hr_agent.ask(message)
+                response_text = str(response)
+
+                span.set_attribute(
+                    "copilotstudio.response",
+                    response_text,
+                )
+                span.set_attribute(
+                    "copilotstudio.status",
+                    "success",
+                )
+
+                await context.yield_output(response_text)
+
+            except Exception as error:
+                span.set_attribute(
+                    "copilotstudio.status",
+                    "failed",
+                )
+                span.record_exception(error)
+                span.set_status(
+                    trace.Status(
+                        trace.StatusCode.ERROR,
+                        str(error),
+                    )
+                )
+                raise
 
 
 class ITAgent(Executor):
@@ -27,4 +101,5 @@ class ITAgent(Executor):
         message: str,
         context: WorkflowContext[str],
     ) -> None:
+        print("Processing ITAgentExecutor...")
         await context.yield_output(f"IT Response: {message}")
