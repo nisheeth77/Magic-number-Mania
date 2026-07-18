@@ -10,13 +10,11 @@ BASE_DIR = Path(__file__).resolve().parent
 
 app = FastAPI(title="DU Voice Support Agent")
 
-
 app.mount(
     "/static",
     StaticFiles(directory=BASE_DIR / "static"),
     name="static",
 )
-
 
 templates = Jinja2Templates(
     directory=BASE_DIR / "templates"
@@ -34,17 +32,7 @@ async def home(request: Request):
 
 @app.get("/health")
 async def health():
-    return {
-        "status": "healthy"
-    }
-
-
-@app.post("/start-call")
-async def start_call():
-    return {
-        "status": "connected",
-        "message": "Connected to DU Voice Agent",
-    }
+    return {"status": "healthy"}
 
 
 @app.websocket("/ws/voice")
@@ -53,152 +41,103 @@ async def voice_websocket(websocket: WebSocket):
 
     print("Browser WebSocket connected")
 
+    total_audio_bytes = 0
+    chunk_count = 0
+
     try:
         await websocket.send_json(
             {
                 "type": "status",
-                "message": "WebSocket connected",
+                "message": "Voice connection established",
             }
         )
 
         while True:
-            message = await websocket.receive_text()
+            message = await websocket.receive()
 
-            print(f"Message received: {message}")
+            if message.get("text") is not None:
+                text = message["text"]
+                print(f"Text received: {text}")
 
-            await websocket.send_json(
-                {
-                    "type": "echo",
-                    "message": message,
-                }
-            )
+            elif message.get("bytes") is not None:
+                audio_chunk = message["bytes"]
+
+                chunk_count += 1
+                total_audio_bytes += len(audio_chunk)
+
+                print(
+                    f"Audio chunk {chunk_count}: "
+                    f"{len(audio_chunk)} bytes | "
+                    f"Total: {total_audio_bytes} bytes"
+                )
+
+                if chunk_count % 10 == 0:
+                    await websocket.send_json(
+                        {
+                            "type": "audio-status",
+                            "message": (
+                                f"Microphone active — "
+                                f"{chunk_count} chunks received"
+                            ),
+                        }
+                    )
 
     except WebSocketDisconnect:
         print("Browser WebSocket disconnected")
+        print(f"Total chunks received: {chunk_count}")
+        print(f"Total audio bytes: {total_audio_bytes}")
 
     except Exception as error:
         print(f"WebSocket error: {error}")
 
-        try:
-            await websocket.send_json(
-                {
-                    "type": "error",
-                    "message": "An unexpected WebSocket error occurred.",
-                }
-            )
-        except Exception:
-            pass
 
 
 
 
 
 
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-
-    <meta
-        name="viewport"
-        content="width=device-width, initial-scale=1.0"
-    >
-
-    <title>DU Virtual Support</title>
-
-    <link
-        rel="stylesheet"
-        href="{{ url_for('static', path='/style.css') }}"
-    >
-</head>
-
-<body>
-
-    <main class="app-container">
-
-        <section class="agent-card">
-
-            <div class="status-row">
-                <span
-                    id="statusDot"
-                    class="status-dot"
-                ></span>
-
-                <span id="connectionStatus">
-                    Ready
-                </span>
-            </div>
-
-            <div class="avatar">
-                <span>DU</span>
-            </div>
-
-            <h1>DU Virtual Support</h1>
-
-            <p class="subtitle">
-                Your AI-powered customer support assistant
-            </p>
-
-            <div class="conversation">
-                <p id="message">
-                    Press Start Call to speak with the support agent.
-                </p>
-            </div>
-
-            <button
-                id="callButton"
-                class="call-button"
-                type="button"
-            >
-                Start Call
-            </button>
-
-            <p class="privacy-note">
-                Your microphone will only be used during the active call.
-            </p>
-
-        </section>
-
-    </main>
 
 
-    <script>
-        const callButton =
-            document.getElementById("callButton");
 
-        const statusText =
-            document.getElementById("connectionStatus");
+<script>
+    const callButton =
+        document.getElementById("callButton");
 
-        const statusDot =
-            document.getElementById("statusDot");
+    const statusText =
+        document.getElementById("connectionStatus");
 
-        const message =
-            document.getElementById("message");
+    const statusDot =
+        document.getElementById("statusDot");
 
+    const message =
+        document.getElementById("message");
 
-        let socket = null;
-        let callActive = false;
-
-
-        callButton.addEventListener("click", () => {
-            if (callActive) {
-                endCall();
-            } else {
-                startCall();
-            }
-        });
+    let socket = null;
+    let mediaStream = null;
+    let mediaRecorder = null;
+    let callActive = false;
 
 
-        function startCall() {
-            if (
-                socket &&
-                (
-                    socket.readyState === WebSocket.OPEN ||
-                    socket.readyState === WebSocket.CONNECTING
-                )
-            ) {
-                return;
-            }
+    callButton.addEventListener("click", async () => {
+        if (callActive) {
+            endCall();
+        } else {
+            await startCall();
+        }
+    });
+
+
+    async function startCall() {
+        try {
+            callButton.disabled = true;
+            statusText.textContent = "Requesting microphone...";
+            message.textContent =
+                "Please allow microphone access in your browser.";
+
+            mediaStream =
+                await navigator.mediaDevices.getUserMedia({
+                    audio: true
+                });
 
             const protocol =
                 window.location.protocol === "https:"
@@ -210,13 +149,7 @@ async def voice_websocket(websocket: WebSocket):
 
             socket = new WebSocket(websocketUrl);
 
-            statusText.textContent = "Connecting...";
-            statusDot.classList.add("connecting");
-
-            message.textContent =
-                "Opening connection to the voice backend...";
-
-            callButton.disabled = true;
+            socket.binaryType = "arraybuffer";
 
 
             socket.onopen = () => {
@@ -226,17 +159,19 @@ async def voice_websocket(websocket: WebSocket):
                 callButton.textContent = "End Call";
                 callButton.classList.add("end-call");
 
-                statusText.textContent = "Connected";
+                statusText.textContent = "Listening";
 
-                statusDot.classList.remove("connecting");
+                statusDot.classList.remove(
+                    "connecting",
+                    "error"
+                );
+
                 statusDot.classList.add("connected");
 
                 message.textContent =
-                    "WebSocket connection established.";
+                    "Microphone connected. Start speaking.";
 
-                socket.send(
-                    "Hello from the DU support UI"
-                );
+                startMicrophoneStreaming();
             };
 
 
@@ -245,34 +180,21 @@ async def voice_websocket(websocket: WebSocket):
                     const data = JSON.parse(event.data);
 
                     console.log(
-                        "Message received from server:",
+                        "Server message:",
                         data
                     );
 
-                    if (data.type === "status") {
-                        message.textContent =
-                            data.message;
-                    }
-
-                    if (data.type === "echo") {
+                    if (
+                        data.type === "status" ||
+                        data.type === "audio-status"
+                    ) {
                         message.textContent =
                             data.message;
                     }
 
                     if (data.type === "error") {
-                        statusText.textContent =
-                            "Error";
-
-                        statusDot.classList.remove(
-                            "connected"
-                        );
-
-                        statusDot.classList.add(
-                            "error"
-                        );
-
-                        message.textContent =
-                            data.message;
+                        statusText.textContent = "Error";
+                        message.textContent = data.message;
                     }
 
                 } catch (error) {
@@ -293,260 +215,149 @@ async def voice_websocket(websocket: WebSocket):
                 statusText.textContent =
                     "Connection error";
 
-                statusDot.classList.remove(
-                    "connecting",
-                    "connected"
-                );
-
-                statusDot.classList.add("error");
-
                 message.textContent =
                     "Unable to connect to the voice backend.";
 
-                callButton.disabled = false;
+                stopMicrophone();
+                resetCallUI();
             };
 
 
             socket.onclose = () => {
-                console.log(
-                    "WebSocket connection closed"
-                );
-
+                stopMicrophone();
                 resetCallUI();
             };
-        }
 
-
-        function endCall() {
-            if (socket) {
-                socket.close();
-                socket = null;
-            }
-
-            resetCallUI();
-        }
-
-
-        function resetCallUI() {
-            callActive = false;
-
-            callButton.disabled = false;
-            callButton.textContent = "Start Call";
-            callButton.classList.remove("end-call");
-
-            statusText.textContent = "Ready";
-
-            statusDot.classList.remove(
-                "connecting",
-                "connected",
-                "error"
+        } catch (error) {
+            console.error(
+                "Microphone error:",
+                error
             );
 
-            message.textContent =
-                "Press Start Call to speak with the support agent.";
+            callButton.disabled = false;
+
+            statusText.textContent =
+                "Microphone unavailable";
+
+            statusDot.classList.add("error");
+
+            if (error.name === "NotAllowedError") {
+                message.textContent =
+                    "Microphone permission was denied.";
+            } else {
+                message.textContent =
+                    "Unable to access the microphone.";
+            }
         }
-    </script>
-
-</body>
-</html>
+    }
 
 
+    function startMicrophoneStreaming() {
+        let mimeType = "";
 
+        const supportedTypes = [
+            "audio/webm;codecs=opus",
+            "audio/webm",
+            "audio/ogg;codecs=opus"
+        ];
 
+        for (const type of supportedTypes) {
+            if (MediaRecorder.isTypeSupported(type)) {
+                mimeType = type;
+                break;
+            }
+        }
 
+        const options =
+            mimeType ? { mimeType } : undefined;
 
+        mediaRecorder =
+            new MediaRecorder(mediaStream, options);
 
-
-* {
-    box-sizing: border-box;
-    margin: 0;
-    padding: 0;
-}
-
-body {
-    min-height: 100vh;
-    font-family: Arial, Helvetica, sans-serif;
-    background:
-        linear-gradient(
-            135deg,
-            #f4f7fb,
-            #e7edf7
+        console.log(
+            "Recording format:",
+            mediaRecorder.mimeType
         );
-}
 
-button {
-    font-family: inherit;
-}
+        mediaRecorder.ondataavailable = async (event) => {
+            if (
+                event.data.size > 0 &&
+                socket &&
+                socket.readyState === WebSocket.OPEN
+            ) {
+                const audioBuffer =
+                    await event.data.arrayBuffer();
 
-.app-container {
-    min-height: 100vh;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 24px;
-}
+                socket.send(audioBuffer);
+            }
+        };
 
-.agent-card {
-    width: 100%;
-    max-width: 460px;
-    padding: 42px 32px;
-    background: #ffffff;
-    border-radius: 24px;
-    text-align: center;
-    box-shadow:
-        0 18px 50px
-        rgba(0, 0, 0, 0.12);
-}
+        mediaRecorder.onerror = (event) => {
+            console.error(
+                "MediaRecorder error:",
+                event.error
+            );
+        };
 
-.status-row {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 9px;
-    margin-bottom: 28px;
-    color: #596679;
-    font-size: 14px;
-    font-weight: 600;
-}
+        // Creates one audio chunk every 250 milliseconds.
+        mediaRecorder.start(250);
+    }
 
-.status-dot {
-    width: 11px;
-    height: 11px;
-    border-radius: 50%;
-    background: #929bad;
-    transition:
-        background 0.2s ease,
-        box-shadow 0.2s ease;
-}
 
-.status-dot.connecting {
-    background: #f4a629;
-    box-shadow:
-        0 0 0 5px
-        rgba(244, 166, 41, 0.15);
-}
+    function endCall() {
+        stopMicrophone();
 
-.status-dot.connected {
-    background: #24b36b;
-    box-shadow:
-        0 0 0 5px
-        rgba(36, 179, 107, 0.15);
-}
+        if (
+            socket &&
+            socket.readyState === WebSocket.OPEN
+        ) {
+            socket.close();
+        }
 
-.status-dot.error {
-    background: #d9404c;
-    box-shadow:
-        0 0 0 5px
-        rgba(217, 64, 76, 0.15);
-}
+        socket = null;
+        resetCallUI();
+    }
 
-.avatar {
-    width: 130px;
-    height: 130px;
-    margin: 0 auto 22px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 50%;
-    background:
-        linear-gradient(
-            135deg,
-            #00a7ce,
-            #164194
+
+    function stopMicrophone() {
+        if (
+            mediaRecorder &&
+            mediaRecorder.state !== "inactive"
+        ) {
+            mediaRecorder.stop();
+        }
+
+        mediaRecorder = null;
+
+        if (mediaStream) {
+            mediaStream
+                .getTracks()
+                .forEach(track => track.stop());
+        }
+
+        mediaStream = null;
+    }
+
+
+    function resetCallUI() {
+        callActive = false;
+
+        callButton.disabled = false;
+        callButton.textContent = "Start Call";
+        callButton.classList.remove("end-call");
+
+        statusText.textContent = "Ready";
+
+        statusDot.classList.remove(
+            "connecting",
+            "connected",
+            "error"
         );
-    color: #ffffff;
-    font-size: 36px;
-    font-weight: 700;
-    box-shadow:
-        0 10px 30px
-        rgba(22, 65, 148, 0.25);
-}
 
-h1 {
-    margin-bottom: 10px;
-    color: #172033;
-    font-size: 29px;
-}
-
-.subtitle {
-    color: #68758a;
-    line-height: 1.5;
-}
-
-.conversation {
-    min-height: 100px;
-    margin: 30px 0;
-    padding: 20px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: #f6f8fb;
-    border: 1px solid #e9edf4;
-    border-radius: 16px;
-    color: #4d596c;
-    line-height: 1.5;
-}
-
-.call-button {
-    width: 100%;
-    padding: 16px;
-    border: none;
-    border-radius: 14px;
-    background: #164194;
-    color: #ffffff;
-    font-size: 17px;
-    font-weight: 700;
-    cursor: pointer;
-    transition:
-        transform 0.2s ease,
-        opacity 0.2s ease,
-        background 0.2s ease;
-}
-
-.call-button:hover:not(:disabled) {
-    transform: translateY(-2px);
-    opacity: 0.92;
-}
-
-.call-button:disabled {
-    cursor: not-allowed;
-    opacity: 0.6;
-}
-
-.call-button.end-call {
-    background: #d93d4a;
-}
-
-.privacy-note {
-    margin-top: 18px;
-    color: #8b95a5;
-    font-size: 12px;
-    line-height: 1.4;
-}
-
-@media (max-width: 520px) {
-    .agent-card {
-        padding: 34px 22px;
+        message.textContent =
+            "Press Start Call to speak with the support agent.";
     }
-
-    .avatar {
-        width: 110px;
-        height: 110px;
-        font-size: 31px;
-    }
-
-    h1 {
-        font-size: 25px;
-    }
-}
-
-
-
-
-
-
-
-
+</script>
 
 
 
