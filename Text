@@ -1,5 +1,688 @@
-from pathlib import Path
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
 
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>DU Virtual Support</title>
+
+    <link
+        rel="stylesheet"
+        href="{{ url_for('static', path='/style.css') }}"
+    >
+</head>
+
+<body>
+    <main class="support-card">
+        <div class="status-container">
+            <span
+                id="statusDot"
+                class="status-dot"
+            ></span>
+
+            <span id="connectionStatus">
+                Ready
+            </span>
+        </div>
+
+        <div class="logo">
+            DU
+        </div>
+
+        <h1>DU Virtual Support</h1>
+
+        <p class="subtitle">
+            Your AI-powered customer support assistant
+        </p>
+
+        <p
+            id="message"
+            class="message"
+        >
+            Press Start Call to speak with the support agent.
+        </p>
+
+        <div
+            id="transcriptContainer"
+            class="transcript-container"
+            hidden
+        >
+            <p>
+                <strong>You:</strong>
+                <span id="userTranscript"></span>
+            </p>
+
+            <p>
+                <strong>Agent:</strong>
+                <span id="agentTranscript"></span>
+            </p>
+        </div>
+
+        <button
+            id="callButton"
+            type="button"
+        >
+            Start Call
+        </button>
+
+        <p class="privacy-text">
+            Your microphone will only be used during the active call.
+        </p>
+    </main>
+
+    <script>
+        const TARGET_SAMPLE_RATE = 24000;
+
+        const callButton =
+            document.getElementById("callButton");
+
+        const connectionStatus =
+            document.getElementById("connectionStatus");
+
+        const statusDot =
+            document.getElementById("statusDot");
+
+        const messageText =
+            document.getElementById("message");
+
+        const transcriptContainer =
+            document.getElementById("transcriptContainer");
+
+        const userTranscript =
+            document.getElementById("userTranscript");
+
+        const agentTranscript =
+            document.getElementById("agentTranscript");
+
+
+        let socket = null;
+        let microphoneStream = null;
+
+        let inputAudioContext = null;
+        let inputSource = null;
+        let inputProcessor = null;
+
+        let outputAudioContext = null;
+        let nextPlaybackTime = 0;
+        let activeAudioSources = [];
+
+        let callActive = false;
+
+
+        callButton.addEventListener(
+            "click",
+            async () => {
+                if (callActive) {
+                    await endCall();
+                } else {
+                    await startCall();
+                }
+            }
+        );
+
+
+        async function startCall() {
+            try {
+                callButton.disabled = true;
+
+                setStatus(
+                    "connecting",
+                    "Requesting microphone access..."
+                );
+
+                microphoneStream =
+                    await navigator.mediaDevices.getUserMedia({
+                        audio: {
+                            channelCount: 1,
+                            echoCancellation: true,
+                            noiseSuppression: true,
+                            autoGainControl: true
+                        }
+                    });
+
+                outputAudioContext = new AudioContext({
+                    sampleRate: TARGET_SAMPLE_RATE
+                });
+
+                await outputAudioContext.resume();
+
+                const websocketProtocol =
+                    window.location.protocol === "https:"
+                        ? "wss"
+                        : "ws";
+
+                socket = new WebSocket(
+                    `${websocketProtocol}://` +
+                    `${window.location.host}/ws/voice`
+                );
+
+                socket.binaryType = "arraybuffer";
+
+
+                socket.onopen = async () => {
+                    callActive = true;
+                    callButton.disabled = false;
+                    callButton.textContent = "End Call";
+                    callButton.classList.add("end-call");
+
+                    setStatus(
+                        "connecting",
+                        "Connecting to DU Voice Agent..."
+                    );
+
+                    await startMicrophoneCapture();
+                };
+
+
+                socket.onmessage = async event => {
+                    if (typeof event.data === "string") {
+                        handleServerMessage(event.data);
+                        return;
+                    }
+
+                    if (event.data instanceof ArrayBuffer) {
+                        playPcm16Audio(event.data);
+                        return;
+                    }
+
+                    if (event.data instanceof Blob) {
+                        const audioBuffer =
+                            await event.data.arrayBuffer();
+
+                        playPcm16Audio(audioBuffer);
+                    }
+                };
+
+
+                socket.onerror = error => {
+                    console.error(
+                        "WebSocket error:",
+                        error
+                    );
+
+                    setStatus(
+                        "error",
+                        "Unable to connect to the voice service."
+                    );
+                };
+
+
+                socket.onclose = async () => {
+                    await cleanupAudio();
+                    resetCallUI();
+                };
+
+            } catch (error) {
+                console.error(
+                    "Unable to start call:",
+                    error
+                );
+
+                await cleanupAudio();
+
+                setStatus(
+                    "error",
+                    error.message ||
+                    "Unable to access the microphone."
+                );
+
+                callButton.disabled = false;
+            }
+        }
+
+
+        async function startMicrophoneCapture() {
+            inputAudioContext = new AudioContext();
+
+            await inputAudioContext.resume();
+
+            inputSource =
+                inputAudioContext.createMediaStreamSource(
+                    microphoneStream
+                );
+
+            /*
+             * ScriptProcessor is used here because it is easy to run
+             * directly in a single HTML file. It captures raw samples,
+             * which are then resampled and converted to PCM16.
+             */
+            inputProcessor =
+                inputAudioContext.createScriptProcessor(
+                    4096,
+                    1,
+                    1
+                );
+
+            inputProcessor.onaudioprocess = event => {
+                if (
+                    !socket ||
+                    socket.readyState !== WebSocket.OPEN
+                ) {
+                    return;
+                }
+
+                const inputSamples =
+                    event.inputBuffer
+                        .getChannelData(0);
+
+                const resampledSamples =
+                    resampleAudio(
+                        inputSamples,
+                        inputAudioContext.sampleRate,
+                        TARGET_SAMPLE_RATE
+                    );
+
+                const pcm16Buffer =
+                    float32ToPcm16(
+                        resampledSamples
+                    );
+
+                socket.send(pcm16Buffer);
+            };
+
+            inputSource.connect(inputProcessor);
+
+            /*
+             * Connecting to destination keeps ScriptProcessor active.
+             * Output is silent because we don't copy microphone samples
+             * into the output buffer.
+             */
+            inputProcessor.connect(
+                inputAudioContext.destination
+            );
+
+            console.log(
+                "Microphone sample rate:",
+                inputAudioContext.sampleRate
+            );
+        }
+
+
+        function resampleAudio(
+            inputSamples,
+            sourceSampleRate,
+            targetSampleRate
+        ) {
+            if (sourceSampleRate === targetSampleRate) {
+                return new Float32Array(inputSamples);
+            }
+
+            const sampleRateRatio =
+                sourceSampleRate / targetSampleRate;
+
+            const outputLength =
+                Math.round(
+                    inputSamples.length /
+                    sampleRateRatio
+                );
+
+            const output =
+                new Float32Array(outputLength);
+
+            for (
+                let outputIndex = 0;
+                outputIndex < outputLength;
+                outputIndex++
+            ) {
+                const sourcePosition =
+                    outputIndex * sampleRateRatio;
+
+                const lowerIndex =
+                    Math.floor(sourcePosition);
+
+                const upperIndex =
+                    Math.min(
+                        lowerIndex + 1,
+                        inputSamples.length - 1
+                    );
+
+                const interpolation =
+                    sourcePosition - lowerIndex;
+
+                output[outputIndex] =
+                    inputSamples[lowerIndex] *
+                    (1 - interpolation) +
+                    inputSamples[upperIndex] *
+                    interpolation;
+            }
+
+            return output;
+        }
+
+
+        function float32ToPcm16(floatSamples) {
+            const pcmBuffer =
+                new ArrayBuffer(
+                    floatSamples.length * 2
+                );
+
+            const dataView =
+                new DataView(pcmBuffer);
+
+            for (
+                let index = 0;
+                index < floatSamples.length;
+                index++
+            ) {
+                const sample =
+                    Math.max(
+                        -1,
+                        Math.min(
+                            1,
+                            floatSamples[index]
+                        )
+                    );
+
+                const pcmValue =
+                    sample < 0
+                        ? sample * 0x8000
+                        : sample * 0x7fff;
+
+                dataView.setInt16(
+                    index * 2,
+                    pcmValue,
+                    true
+                );
+            }
+
+            return pcmBuffer;
+        }
+
+
+        function playPcm16Audio(arrayBuffer) {
+            if (!outputAudioContext) {
+                return;
+            }
+
+            const pcmData =
+                new Int16Array(arrayBuffer);
+
+            const floatData =
+                new Float32Array(pcmData.length);
+
+            for (
+                let index = 0;
+                index < pcmData.length;
+                index++
+            ) {
+                floatData[index] =
+                    pcmData[index] / 32768;
+            }
+
+            const audioBuffer =
+                outputAudioContext.createBuffer(
+                    1,
+                    floatData.length,
+                    TARGET_SAMPLE_RATE
+                );
+
+            audioBuffer
+                .getChannelData(0)
+                .set(floatData);
+
+            const audioSource =
+                outputAudioContext.createBufferSource();
+
+            audioSource.buffer = audioBuffer;
+
+            audioSource.connect(
+                outputAudioContext.destination
+            );
+
+            const currentTime =
+                outputAudioContext.currentTime;
+
+            if (nextPlaybackTime < currentTime) {
+                nextPlaybackTime = currentTime;
+            }
+
+            audioSource.start(nextPlaybackTime);
+
+            nextPlaybackTime +=
+                audioBuffer.duration;
+
+            activeAudioSources.push(audioSource);
+
+            audioSource.onended = () => {
+                activeAudioSources =
+                    activeAudioSources.filter(
+                        source => source !== audioSource
+                    );
+            };
+        }
+
+
+        function clearAgentAudio() {
+            for (const source of activeAudioSources) {
+                try {
+                    source.stop();
+                } catch {
+                    // Audio source may already be stopped.
+                }
+            }
+
+            activeAudioSources = [];
+
+            if (outputAudioContext) {
+                nextPlaybackTime =
+                    outputAudioContext.currentTime;
+            }
+        }
+
+
+        function handleServerMessage(rawMessage) {
+            let data;
+
+            try {
+                data = JSON.parse(rawMessage);
+            } catch (error) {
+                console.error(
+                    "Invalid server message:",
+                    rawMessage,
+                    error
+                );
+
+                return;
+            }
+
+            console.log(
+                "Server event:",
+                data
+            );
+
+            switch (data.type) {
+                case "connecting":
+                    setStatus(
+                        "connecting",
+                        data.message
+                    );
+                    break;
+
+                case "ready":
+                    setStatus(
+                        "connected",
+                        data.message
+                    );
+                    break;
+
+                case "listening":
+                    setStatus(
+                        "connected",
+                        data.message
+                    );
+                    break;
+
+                case "processing":
+                    setStatus(
+                        "connecting",
+                        data.message
+                    );
+                    break;
+
+                case "speaking":
+                    setStatus(
+                        "connected",
+                        data.message
+                    );
+                    break;
+
+                case "clear-audio":
+                    clearAgentAudio();
+                    break;
+
+                case "user-transcript":
+                    transcriptContainer.hidden = false;
+                    userTranscript.textContent =
+                        data.text;
+                    break;
+
+                case "agent-transcript":
+                    transcriptContainer.hidden = false;
+                    agentTranscript.textContent =
+                        data.text;
+                    break;
+
+                case "error":
+                    setStatus(
+                        "error",
+                        data.message ||
+                        "Voice service error"
+                    );
+                    break;
+            }
+        }
+
+
+        function setStatus(state, text) {
+            connectionStatus.textContent =
+                state === "connected"
+                    ? "Listening"
+                    : state === "error"
+                        ? "Error"
+                        : "Connecting";
+
+            messageText.textContent = text;
+
+            statusDot.classList.remove(
+                "connected",
+                "connecting",
+                "error"
+            );
+
+            statusDot.classList.add(state);
+        }
+
+
+        async function endCall() {
+            if (
+                socket &&
+                socket.readyState === WebSocket.OPEN
+            ) {
+                socket.close();
+            }
+
+            socket = null;
+
+            await cleanupAudio();
+
+            resetCallUI();
+        }
+
+
+        async function cleanupAudio() {
+            clearAgentAudio();
+
+            if (inputProcessor) {
+                inputProcessor.disconnect();
+                inputProcessor.onaudioprocess = null;
+                inputProcessor = null;
+            }
+
+            if (inputSource) {
+                inputSource.disconnect();
+                inputSource = null;
+            }
+
+            if (microphoneStream) {
+                microphoneStream
+                    .getTracks()
+                    .forEach(track => track.stop());
+
+                microphoneStream = null;
+            }
+
+            if (inputAudioContext) {
+                await inputAudioContext.close();
+                inputAudioContext = null;
+            }
+
+            if (outputAudioContext) {
+                await outputAudioContext.close();
+                outputAudioContext = null;
+            }
+
+            nextPlaybackTime = 0;
+        }
+
+
+        function resetCallUI() {
+            callActive = false;
+
+            callButton.disabled = false;
+            callButton.textContent = "Start Call";
+            callButton.classList.remove("end-call");
+
+            connectionStatus.textContent = "Ready";
+
+            statusDot.classList.remove(
+                "connected",
+                "connecting",
+                "error"
+            );
+
+            messageText.textContent =
+                "Press Start Call to speak with " +
+                "the support agent.";
+        }
+    </script>
+</body>
+</html>
+
+
+
+
+_________________________________________________________________________
+
+
+
+
+
+
+
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import os
+from contextlib import suppress
+from pathlib import Path
+from typing import Any
+
+from azure.ai.voicelive.aio import AgentSessionConfig, connect
+from azure.ai.voicelive.models import (
+    InputAudioFormat,
+    Modality,
+    OutputAudioFormat,
+    RequestSession,
+    ServerEventType,
+)
+from azure.identity.aio import AzureCliCredential
+from dotenv import load_dotenv
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -7,6 +690,8 @@ from fastapi.templating import Jinja2Templates
 
 
 BASE_DIR = Path(__file__).resolve().parent
+
+load_dotenv(BASE_DIR / ".env", override=True)
 
 app = FastAPI(title="DU Voice Support Agent")
 
@@ -35,329 +720,332 @@ async def health():
     return {"status": "healthy"}
 
 
+def get_required_environment_variable(name: str) -> str:
+    value = os.getenv(name)
+
+    if not value:
+        raise RuntimeError(
+            f"Missing required environment variable: {name}"
+        )
+
+    return value
+
+
+async def send_browser_status(
+    websocket: WebSocket,
+    status_type: str,
+    message: str,
+) -> None:
+    try:
+        await websocket.send_json(
+            {
+                "type": status_type,
+                "message": message,
+            }
+        )
+    except Exception:
+        # The browser may already have disconnected.
+        pass
+
+
+async def browser_to_voice_live(
+    websocket: WebSocket,
+    voice_connection: Any,
+) -> None:
+    """
+    Receive PCM16 audio from the browser and send it to Voice Live.
+    """
+
+    audio_chunk_count = 0
+
+    while True:
+        message = await websocket.receive()
+
+        message_type = message.get("type")
+
+        if message_type == "websocket.disconnect":
+            print("Browser requested WebSocket disconnect")
+            return
+
+        audio_bytes = message.get("bytes")
+
+        if audio_bytes:
+            audio_chunk_count += 1
+
+            # Voice Live expects Base64-encoded PCM16 data.
+            encoded_audio = base64.b64encode(
+                audio_bytes
+            ).decode("utf-8")
+
+            await voice_connection.input_audio_buffer.append(
+                audio=encoded_audio
+            )
+
+            if audio_chunk_count % 20 == 0:
+                print(
+                    f"Sent {audio_chunk_count} PCM audio "
+                    "chunks to Voice Live"
+                )
+
+        text_message = message.get("text")
+
+        if text_message:
+            print(f"Browser message: {text_message}")
+
+
+async def voice_live_to_browser(
+    websocket: WebSocket,
+    voice_connection: Any,
+) -> None:
+    """
+    Receive Voice Live events and send agent audio to the browser.
+    """
+
+    active_response = False
+    response_finished = True
+
+    async for event in voice_connection:
+        event_type = event.type
+
+        if event_type == ServerEventType.SESSION_UPDATED:
+            print("Voice Live session ready")
+
+            await send_browser_status(
+                websocket,
+                "ready",
+                "Connected to DU Voice Agent. You can start speaking.",
+            )
+
+        elif (
+            event_type
+            == ServerEventType.INPUT_AUDIO_BUFFER_SPEECH_STARTED
+        ):
+            print("User started speaking")
+
+            await send_browser_status(
+                websocket,
+                "listening",
+                "Listening...",
+            )
+
+            # Barge-in: stop current browser playback.
+            await send_browser_status(
+                websocket,
+                "clear-audio",
+                "clear",
+            )
+
+            if active_response and not response_finished:
+                with suppress(Exception):
+                    await voice_connection.response.cancel()
+
+        elif (
+            event_type
+            == ServerEventType.INPUT_AUDIO_BUFFER_SPEECH_STOPPED
+        ):
+            print("User stopped speaking")
+
+            await send_browser_status(
+                websocket,
+                "processing",
+                "Processing your request...",
+            )
+
+        elif event_type == ServerEventType.RESPONSE_CREATED:
+            active_response = True
+            response_finished = False
+
+            await send_browser_status(
+                websocket,
+                "speaking",
+                "DU Assistant is responding...",
+            )
+
+        elif event_type == ServerEventType.RESPONSE_AUDIO_DELTA:
+            # event.delta contains PCM16 audio generated by the agent.
+            if event.delta:
+                await websocket.send_bytes(event.delta)
+
+        elif event_type == ServerEventType.RESPONSE_AUDIO_DONE:
+            print("Agent finished speaking")
+
+            await send_browser_status(
+                websocket,
+                "ready",
+                "Ready for your next question.",
+            )
+
+        elif event_type == ServerEventType.RESPONSE_DONE:
+            active_response = False
+            response_finished = True
+
+        elif (
+            event_type
+            == ServerEventType
+            .CONVERSATION_ITEM_INPUT_AUDIO_TRANSCRIPTION_COMPLETED
+        ):
+            transcript = event.get("transcript", "")
+
+            if transcript:
+                print(f"User: {transcript}")
+
+                await websocket.send_json(
+                    {
+                        "type": "user-transcript",
+                        "text": transcript,
+                    }
+                )
+
+        elif (
+            event_type
+            == ServerEventType.RESPONSE_AUDIO_TRANSCRIPT_DONE
+        ):
+            transcript = event.get("transcript", "")
+
+            if transcript:
+                print(f"Agent: {transcript}")
+
+                await websocket.send_json(
+                    {
+                        "type": "agent-transcript",
+                        "text": transcript,
+                    }
+                )
+
+        elif event_type == ServerEventType.ERROR:
+            error_message = getattr(
+                event.error,
+                "message",
+                "Unknown Voice Live error",
+            )
+
+            print(f"Voice Live error: {error_message}")
+
+            await send_browser_status(
+                websocket,
+                "error",
+                error_message,
+            )
+
+
 @app.websocket("/ws/voice")
 async def voice_websocket(websocket: WebSocket):
     await websocket.accept()
 
     print("Browser WebSocket connected")
 
-    total_audio_bytes = 0
-    chunk_count = 0
+    credential: AzureCliCredential | None = None
 
     try:
-        await websocket.send_json(
-            {
-                "type": "status",
-                "message": "Voice connection established",
-            }
+        endpoint = get_required_environment_variable(
+            "VOICELIVE_ENDPOINT"
         )
 
-        while True:
-            message = await websocket.receive()
+        project_name = get_required_environment_variable(
+            "PROJECT_NAME"
+        )
 
-            if message.get("text") is not None:
-                text = message["text"]
-                print(f"Text received: {text}")
+        agent_name = get_required_environment_variable(
+            "AGENT_NAME"
+        )
 
-            elif message.get("bytes") is not None:
-                audio_chunk = message["bytes"]
+        agent_version = os.getenv("AGENT_VERSION")
 
-                chunk_count += 1
-                total_audio_bytes += len(audio_chunk)
+        api_version = os.getenv(
+            "VOICELIVE_API_VERSION",
+            "2026-01-01-preview",
+        )
 
-                print(
-                    f"Audio chunk {chunk_count}: "
-                    f"{len(audio_chunk)} bytes | "
-                    f"Total: {total_audio_bytes} bytes"
+        agent_config: AgentSessionConfig = {
+            "agent_name": agent_name,
+            "project_name": project_name,
+            "agent_version": (
+                agent_version if agent_version else None
+            ),
+        }
+
+        await send_browser_status(
+            websocket,
+            "connecting",
+            "Connecting to DU Voice Agent...",
+        )
+
+        credential = AzureCliCredential()
+
+        async with connect(
+            endpoint=endpoint,
+            credential=credential,
+            api_version=api_version,
+            agent_config=agent_config,
+        ) as voice_connection:
+
+            print("Connected to Azure Voice Live")
+
+            session_configuration = RequestSession(
+                modalities=[
+                    Modality.TEXT,
+                    Modality.AUDIO,
+                ],
+                input_audio_format=InputAudioFormat.PCM16,
+                output_audio_format=OutputAudioFormat.PCM16,
+            )
+
+            await voice_connection.session.update(
+                session=session_configuration
+            )
+
+            browser_task = asyncio.create_task(
+                browser_to_voice_live(
+                    websocket,
+                    voice_connection,
                 )
+            )
 
-                if chunk_count % 10 == 0:
-                    await websocket.send_json(
-                        {
-                            "type": "audio-status",
-                            "message": (
-                                f"Microphone active — "
-                                f"{chunk_count} chunks received"
-                            ),
-                        }
-                    )
+            azure_task = asyncio.create_task(
+                voice_live_to_browser(
+                    websocket,
+                    voice_connection,
+                )
+            )
+
+            done, pending = await asyncio.wait(
+                {
+                    browser_task,
+                    azure_task,
+                },
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            for task in pending:
+                task.cancel()
+
+            for task in pending:
+                with suppress(asyncio.CancelledError):
+                    await task
+
+            for task in done:
+                exception = task.exception()
+
+                if exception:
+                    raise exception
 
     except WebSocketDisconnect:
         print("Browser WebSocket disconnected")
-        print(f"Total chunks received: {chunk_count}")
-        print(f"Total audio bytes: {total_audio_bytes}")
 
     except Exception as error:
-        print(f"WebSocket error: {error}")
+        print(f"Voice bridge error: {error}")
 
+        await send_browser_status(
+            websocket,
+            "error",
+            str(error),
+        )
 
+    finally:
+        if credential:
+            await credential.close()
 
+        with suppress(Exception):
+            await websocket.close()
 
-
-
-
-
-
-
-<script>
-    const callButton =
-        document.getElementById("callButton");
-
-    const statusText =
-        document.getElementById("connectionStatus");
-
-    const statusDot =
-        document.getElementById("statusDot");
-
-    const message =
-        document.getElementById("message");
-
-    let socket = null;
-    let mediaStream = null;
-    let mediaRecorder = null;
-    let callActive = false;
-
-
-    callButton.addEventListener("click", async () => {
-        if (callActive) {
-            endCall();
-        } else {
-            await startCall();
-        }
-    });
-
-
-    async function startCall() {
-        try {
-            callButton.disabled = true;
-            statusText.textContent = "Requesting microphone...";
-            message.textContent =
-                "Please allow microphone access in your browser.";
-
-            mediaStream =
-                await navigator.mediaDevices.getUserMedia({
-                    audio: true
-                });
-
-            const protocol =
-                window.location.protocol === "https:"
-                    ? "wss"
-                    : "ws";
-
-            const websocketUrl =
-                `${protocol}://${window.location.host}/ws/voice`;
-
-            socket = new WebSocket(websocketUrl);
-
-            socket.binaryType = "arraybuffer";
-
-
-            socket.onopen = () => {
-                callActive = true;
-                callButton.disabled = false;
-
-                callButton.textContent = "End Call";
-                callButton.classList.add("end-call");
-
-                statusText.textContent = "Listening";
-
-                statusDot.classList.remove(
-                    "connecting",
-                    "error"
-                );
-
-                statusDot.classList.add("connected");
-
-                message.textContent =
-                    "Microphone connected. Start speaking.";
-
-                startMicrophoneStreaming();
-            };
-
-
-            socket.onmessage = (event) => {
-                try {
-                    const data = JSON.parse(event.data);
-
-                    console.log(
-                        "Server message:",
-                        data
-                    );
-
-                    if (
-                        data.type === "status" ||
-                        data.type === "audio-status"
-                    ) {
-                        message.textContent =
-                            data.message;
-                    }
-
-                    if (data.type === "error") {
-                        statusText.textContent = "Error";
-                        message.textContent = data.message;
-                    }
-
-                } catch (error) {
-                    console.error(
-                        "Unable to read server message:",
-                        error
-                    );
-                }
-            };
-
-
-            socket.onerror = (error) => {
-                console.error(
-                    "WebSocket error:",
-                    error
-                );
-
-                statusText.textContent =
-                    "Connection error";
-
-                message.textContent =
-                    "Unable to connect to the voice backend.";
-
-                stopMicrophone();
-                resetCallUI();
-            };
-
-
-            socket.onclose = () => {
-                stopMicrophone();
-                resetCallUI();
-            };
-
-        } catch (error) {
-            console.error(
-                "Microphone error:",
-                error
-            );
-
-            callButton.disabled = false;
-
-            statusText.textContent =
-                "Microphone unavailable";
-
-            statusDot.classList.add("error");
-
-            if (error.name === "NotAllowedError") {
-                message.textContent =
-                    "Microphone permission was denied.";
-            } else {
-                message.textContent =
-                    "Unable to access the microphone.";
-            }
-        }
-    }
-
-
-    function startMicrophoneStreaming() {
-        let mimeType = "";
-
-        const supportedTypes = [
-            "audio/webm;codecs=opus",
-            "audio/webm",
-            "audio/ogg;codecs=opus"
-        ];
-
-        for (const type of supportedTypes) {
-            if (MediaRecorder.isTypeSupported(type)) {
-                mimeType = type;
-                break;
-            }
-        }
-
-        const options =
-            mimeType ? { mimeType } : undefined;
-
-        mediaRecorder =
-            new MediaRecorder(mediaStream, options);
-
-        console.log(
-            "Recording format:",
-            mediaRecorder.mimeType
-        );
-
-        mediaRecorder.ondataavailable = async (event) => {
-            if (
-                event.data.size > 0 &&
-                socket &&
-                socket.readyState === WebSocket.OPEN
-            ) {
-                const audioBuffer =
-                    await event.data.arrayBuffer();
-
-                socket.send(audioBuffer);
-            }
-        };
-
-        mediaRecorder.onerror = (event) => {
-            console.error(
-                "MediaRecorder error:",
-                event.error
-            );
-        };
-
-        // Creates one audio chunk every 250 milliseconds.
-        mediaRecorder.start(250);
-    }
-
-
-    function endCall() {
-        stopMicrophone();
-
-        if (
-            socket &&
-            socket.readyState === WebSocket.OPEN
-        ) {
-            socket.close();
-        }
-
-        socket = null;
-        resetCallUI();
-    }
-
-
-    function stopMicrophone() {
-        if (
-            mediaRecorder &&
-            mediaRecorder.state !== "inactive"
-        ) {
-            mediaRecorder.stop();
-        }
-
-        mediaRecorder = null;
-
-        if (mediaStream) {
-            mediaStream
-                .getTracks()
-                .forEach(track => track.stop());
-        }
-
-        mediaStream = null;
-    }
-
-
-    function resetCallUI() {
-        callActive = false;
-
-        callButton.disabled = false;
-        callButton.textContent = "Start Call";
-        callButton.classList.remove("end-call");
-
-        statusText.textContent = "Ready";
-
-        statusDot.classList.remove(
-            "connecting",
-            "connected",
-            "error"
-        );
-
-        message.textContent =
-            "Press Start Call to speak with the support agent.";
-    }
-</script>
-
-
-
+        print("Voice session closed")
