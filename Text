@@ -1,460 +1,250 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-    <title>DU Voice Support Agent</title>
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
 
-    <link rel="stylesheet"
-          href="{{ url_for('static', path='style.css') }}">
+    <title>DU Virtual Support</title>
+
+    <link
+        rel="stylesheet"
+        href="{{ url_for('static', path='style.css') }}?v=5"
+    >
 </head>
 
 <body>
+    <div class="application-shell">
 
-<div class="app-container">
+        <!-- Top header -->
+        <header class="top-bar">
+            <div class="agent-brand">
+                <div class="brand-icon">du</div>
 
-    <div class="agent-card">
-
-        <!-- Status -->
-        <div class="status-row">
-
-            <div class="status-left">
-
-                <span id="statusDot"
-                      class="status-dot"></span>
-
-                <span id="connectionStatus">
-                    Ready
-                </span>
-
+                <div>
+                    <h2>DU Virtual Support</h2>
+                    <p>Your AI-powered customer support agent</p>
+                </div>
             </div>
 
-            <div class="brand">
-                Microsoft Foundry
+            <div class="session-controls">
+                <div class="technology-badge">
+                    Azure AI Foundry
+                </div>
+
+                <div class="technology-badge">
+                    Voice Live
+                </div>
+
+                <div class="connection-badge">
+                    <span
+                        id="statusDot"
+                        class="status-dot"
+                    ></span>
+
+                    <span id="connectionStatus">
+                        Ready
+                    </span>
+                </div>
+
+                <button
+                    id="callButton"
+                    class="call-button"
+                    type="button"
+                >
+                    Start Call
+                </button>
             </div>
-
-        </div>
-
-
-        <!-- Avatar -->
-
-        <div class="avatar-wrapper">
-
-            <div class="avatar">
-
-                🤖
-
-            </div>
-
-        </div>
+        </header>
 
 
-        <!-- Title -->
+        <!-- Main workspace -->
+        <main class="workspace">
 
-        <h1 class="title">
-            DU Virtual Support
-        </h1>
+            <!-- Left panel -->
+            <section class="information-panel">
+                <div class="section-heading">
+                    <span class="eyebrow">
+                        LIVE CUSTOMER SESSION
+                    </span>
 
-        <p class="subtitle">
+                    <h1>How can we help you today?</h1>
 
-            Azure AI Foundry Voice Agent
-
-        </p>
-
-
-        <!-- Status message -->
-
-        <div class="message-box">
-
-            <p id="message">
-
-                Press Start Call to begin.
-
-            </p>
-
-        </div>
+                    <p>
+                        Speak naturally with the DU support assistant.
+                        Your conversation will appear here in real time.
+                    </p>
+                </div>
 
 
-        <!-- Conversation -->
+                <!-- Current system message -->
+                <div class="live-status-card">
+                    <div class="live-status-icon">
+                        <span class="microphone-icon">🎙</span>
+                    </div>
 
-        <div id="transcriptContainer"
-             class="conversation"
-             hidden>
+                    <div>
+                        <span class="card-label">
+                            Current status
+                        </span>
 
-            <div class="bubble user">
-
-                <strong>You</strong>
-
-                <p id="userTranscript"></p>
-
-            </div>
-
-            <div class="bubble agent">
-
-                <strong>Agent</strong>
-
-                <p id="agentTranscript"></p>
-
-            </div>
-
-        </div>
+                        <p id="message">
+                            Press Start Call to speak with the support agent.
+                        </p>
+                    </div>
+                </div>
 
 
-        <!-- Button -->
+                <!-- Transcript section -->
+                <div
+                    id="transcriptContainer"
+                    class="conversation-panel"
+                    hidden
+                >
+                    <div class="conversation-heading">
+                        <h3>Live conversation</h3>
 
-        <button id="callButton"
-                class="call-button"
-                type="button">
+                        <span class="live-indicator">
+                            Live
+                        </span>
+                    </div>
 
-            🎤 Start Call
+                    <div class="message-row user-row">
+                        <div class="message-avatar user-avatar">
+                            You
+                        </div>
 
-        </button>
+                        <div class="message-content">
+                            <span class="speaker-name">
+                                You
+                            </span>
+
+                            <div class="message-bubble user-bubble">
+                                <span id="userTranscript"></span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="message-row agent-row">
+                        <div class="message-avatar agent-message-avatar">
+                            du
+                        </div>
+
+                        <div class="message-content">
+                            <span class="speaker-name">
+                                DU Assistant
+                            </span>
+
+                            <div class="message-bubble agent-bubble">
+                                <span id="agentTranscript"></span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
 
 
-        <p class="privacy-note">
+                <!-- Features -->
+                <div class="feature-row">
+                    <div class="feature-item">
+                        <span>🌐</span>
 
-            Your microphone is only active during the call.
+                        <div>
+                            <strong>Multilingual</strong>
+                            <p>Speak in English or Hindi</p>
+                        </div>
+                    </div>
 
-        </p>
+                    <div class="feature-item">
+                        <span>⚡</span>
 
+                        <div>
+                            <strong>Real-time</strong>
+                            <p>Streaming voice responses</p>
+                        </div>
+                    </div>
+
+                    <div class="feature-item">
+                        <span>🔒</span>
+
+                        <div>
+                            <strong>Secure</strong>
+                            <p>Azure identity authentication</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+
+            <!-- Right panel -->
+            <section class="assistant-panel">
+
+                <div class="assistant-background-circle"></div>
+
+                <div class="assistant-visual">
+                    <div class="avatar-glow"></div>
+
+                    <div class="assistant-avatar">
+                        <div class="avatar-head">
+                            <div class="avatar-hair"></div>
+                            <div class="avatar-face"></div>
+                        </div>
+
+                        <div class="avatar-body">
+                            <div class="avatar-shirt"></div>
+                            <div class="avatar-jacket left-jacket"></div>
+                            <div class="avatar-jacket right-jacket"></div>
+                        </div>
+                    </div>
+                </div>
+
+
+                <div class="assistant-description">
+                    <div class="assistant-name">
+                        DU Virtual Assistant
+                    </div>
+
+                    <p>
+                        Hello! I am your DU customer support assistant.
+                        Start the call and tell me how I can help you.
+                    </p>
+                </div>
+
+
+                <div class="audio-visualizer" aria-hidden="true">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                </div>
+
+                <p class="privacy-text">
+                    Your microphone is only active during the call.
+                </p>
+            </section>
+        </main>
     </div>
 
-</div>
 
-<!--
-PASTE YOUR EXISTING JAVASCRIPT HERE
-
-<script>
-...
-</script>
-
-DO NOT MODIFY IT.
--->
-
+    <!-- Keep your complete existing JavaScript here without changing it. -->
+    <script>
+        /*
+         * Paste your current JavaScript here exactly as it is.
+         *
+         * Do not rename:
+         * callButton
+         * connectionStatus
+         * statusDot
+         * message
+         * transcriptContainer
+         * userTranscript
+         * agentTranscript
+         */
+    </script>
 </body>
 </html>
-
-
-
-
-
-/* ---------- Reset ---------- */
-
-*{
-    margin:0;
-    padding:0;
-    box-sizing:border-box;
-}
-
-body{
-    font-family:"Segoe UI",Arial,sans-serif;
-    background:linear-gradient(135deg,#0078D4,#50E6FF);
-    min-height:100vh;
-    display:flex;
-    justify-content:center;
-    align-items:center;
-    padding:24px;
-}
-
-/* ---------- Main ---------- */
-
-.app-container{
-    width:100%;
-    display:flex;
-    justify-content:center;
-}
-
-.agent-card{
-
-    width:100%;
-    max-width:520px;
-
-    background:white;
-
-    border-radius:24px;
-
-    padding:32px;
-
-    box-shadow:
-        0 20px 60px rgba(0,0,0,.15);
-
-}
-
-/* ---------- Header ---------- */
-
-.status-row{
-
-    display:flex;
-    justify-content:space-between;
-    align-items:center;
-
-    margin-bottom:28px;
-
-}
-
-.status-left{
-
-    display:flex;
-    align-items:center;
-    gap:10px;
-
-}
-
-.brand{
-
-    color:#666;
-    font-size:14px;
-    font-weight:600;
-
-}
-
-.status-dot{
-
-    width:12px;
-    height:12px;
-
-    border-radius:50%;
-
-    background:#999;
-
-}
-
-/* ---------- Status Colors ---------- */
-
-.connected{
-
-    background:#16c60c;
-
-}
-
-.connecting{
-
-    background:#ffb900;
-
-}
-
-.error{
-
-    background:#d13438;
-
-}
-
-/* ---------- Avatar ---------- */
-
-.avatar-wrapper{
-
-    display:flex;
-    justify-content:center;
-
-}
-
-.avatar{
-
-    width:120px;
-    height:120px;
-
-    border-radius:50%;
-
-    background:linear-gradient(135deg,#0078D4,#00BCF2);
-
-    display:flex;
-    justify-content:center;
-    align-items:center;
-
-    font-size:56px;
-
-    color:white;
-
-    margin-bottom:22px;
-
-    box-shadow:0 12px 30px rgba(0,120,212,.35);
-
-    animation:pulse 2s infinite;
-
-}
-
-@keyframes pulse{
-
-    0%{
-        transform:scale(1);
-    }
-
-    50%{
-        transform:scale(1.05);
-    }
-
-    100%{
-        transform:scale(1);
-    }
-
-}
-
-/* ---------- Text ---------- */
-
-.title{
-
-    text-align:center;
-
-    font-size:34px;
-
-    color:#222;
-
-}
-
-.subtitle{
-
-    margin-top:10px;
-
-    text-align:center;
-
-    color:#666;
-
-    margin-bottom:24px;
-
-}
-
-/* ---------- Message ---------- */
-
-.message-box{
-
-    background:#F5F8FB;
-
-    border-radius:14px;
-
-    padding:18px;
-
-    text-align:center;
-
-    color:#444;
-
-    margin-bottom:24px;
-
-}
-
-/* ---------- Conversation ---------- */
-
-.conversation{
-
-    display:flex;
-    flex-direction:column;
-
-    gap:14px;
-
-    margin-bottom:24px;
-
-}
-
-.bubble{
-
-    padding:14px 18px;
-
-    border-radius:16px;
-
-    line-height:1.5;
-
-    word-break:break-word;
-
-}
-
-.user{
-
-    background:#E8F3FF;
-
-}
-
-.agent{
-
-    background:#F3F3F3;
-
-}
-
-/* ---------- Button ---------- */
-
-.call-button{
-
-    width:100%;
-
-    padding:16px;
-
-    border:none;
-
-    border-radius:14px;
-
-    cursor:pointer;
-
-    font-size:18px;
-
-    font-weight:600;
-
-    color:white;
-
-    background:#0078D4;
-
-    transition:.25s;
-
-}
-
-.call-button:hover{
-
-    background:#106EBE;
-
-    transform:translateY(-2px);
-
-}
-
-.call-button.end-call{
-
-    background:#D13438;
-
-}
-
-.call-button.end-call:hover{
-
-    background:#B71C1C;
-
-}
-
-/* ---------- Footer ---------- */
-
-.privacy-note{
-
-    margin-top:18px;
-
-    text-align:center;
-
-    font-size:13px;
-
-    color:#666;
-
-}
-
-/* ---------- Responsive ---------- */
-
-@media(max-width:600px){
-
-    .agent-card{
-
-        padding:24px;
-
-    }
-
-    .avatar{
-
-        width:96px;
-        height:96px;
-        font-size:46px;
-
-    }
-
-    .title{
-
-        font-size:28px;
-
-    }
-
-}
-
-
-
