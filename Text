@@ -2,70 +2,90 @@ import time
 import uuid
 from datetime import datetime, timezone
 
+from agent_framework import Executor, WorkflowContext, handler
+from hr_agent import HRAgent as HRCopilotAgent
+
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
 tracer = trace.get_tracer(__name__)
 
 
-@handler
-async def process(self, message: str, context: WorkflowContext[str]):
+class HRAgent(Executor):
 
-    conversation_id = str(uuid.uuid4())
-    request_id = str(uuid.uuid4())
+    def __init__(self, id):
+        super().__init__(id=id)
+        self.hr_agent = HRCopilotAgent()
 
-    with tracer.start_as_current_span("copilotstudio.hr.invoke") as span:
+    @handler
+    async def process(self, message: str, context: WorkflowContext[str]):
 
-        start = time.perf_counter()
+        conversation_id = str(uuid.uuid4())
+        request_id = str(uuid.uuid4())
 
-        # ---------- Agent Details ----------
-        span.set_attribute("copilotstudio.agent_name", "HR Agent")
-        span.set_attribute("copilotstudio.agent_identifier", self.hr_agent.agent_identifier)
-        span.set_attribute("copilotstudio.environment_id", self.hr_agent.environment_id)
-        span.set_attribute("copilotstudio.client_id", self.hr_agent.client_id)
-        span.set_attribute("copilotstudio.tenant_id", self.hr_agent.tenant_id)
+        with tracer.start_as_current_span("copilotstudio.hr.invoke") as span:
 
-        # ---------- Workflow Details ----------
-        span.set_attribute("workflow.name", "HR and IT Workflow")
-        span.set_attribute("executor.id", self.id)
+            start = time.perf_counter()
 
-        # ---------- Request ----------
-        span.set_attribute("copilotstudio.prompt", message)
-        span.set_attribute("copilotstudio.prompt_length", len(message))
-        span.set_attribute("copilotstudio.request_id", request_id)
-        span.set_attribute("copilotstudio.conversation_id", conversation_id)
-        span.set_attribute("copilotstudio.start_time", datetime.now(timezone.utc).isoformat())
+            # ---------- Agent Details ----------
+            span.set_attribute("copilotstudio.agent_name", "HR Agent")
+            span.set_attribute("copilotstudio.agent_identifier", self.hr_agent.agent_identifier)
+            span.set_attribute("copilotstudio.environment_id", self.hr_agent.environment_id)
 
-        try:
+            # Uncomment these only if they exist in hr_agent.py
+            # span.set_attribute("copilotstudio.client_id", self.hr_agent.client_id)
+            # span.set_attribute("copilotstudio.tenant_id", self.hr_agent.tenant_id)
 
-            response = await self.hr_agent.ask(message)
+            # ---------- Workflow ----------
+            span.set_attribute("workflow.name", "HR and IT Workflow")
+            span.set_attribute("executor.id", self.id)
 
-            response_text = str(response)
+            # ---------- Request ----------
+            span.set_attribute("copilotstudio.prompt", message)
+            span.set_attribute("copilotstudio.prompt_length", len(message))
+            span.set_attribute("copilotstudio.request_id", request_id)
+            span.set_attribute("copilotstudio.conversation_id", conversation_id)
+            span.set_attribute(
+                "copilotstudio.start_time",
+                datetime.now(timezone.utc).isoformat()
+            )
 
-            duration = (time.perf_counter() - start) * 1000
+            try:
 
-            # ---------- Response ----------
-            span.set_attribute("copilotstudio.response", response_text)
-            span.set_attribute("copilotstudio.response_length", len(response_text))
-            span.set_attribute("copilotstudio.end_time", datetime.now(timezone.utc).isoformat())
-            span.set_attribute("copilotstudio.duration_ms", duration)
+                print("Calling Copilot Studio HR Agent...")
 
-            # ---------- Status ----------
-            span.set_attribute("copilotstudio.status", "Success")
-            span.set_status(Status(StatusCode.OK))
+                response = await self.hr_agent.ask(message)
 
-            await context.yield_output(response_text)
+                response_text = str(response)
 
-        except Exception as ex:
+                duration = (time.perf_counter() - start) * 1000
 
-            duration = (time.perf_counter() - start) * 1000
+                # ---------- Response ----------
+                span.set_attribute("copilotstudio.response", response_text)
+                span.set_attribute("copilotstudio.response_length", len(response_text))
+                span.set_attribute("copilotstudio.response_type", type(response).__name__)
+                span.set_attribute(
+                    "copilotstudio.end_time",
+                    datetime.now(timezone.utc).isoformat()
+                )
+                span.set_attribute("copilotstudio.duration_ms", duration)
 
-            span.set_attribute("copilotstudio.status", "Failed")
-            span.set_attribute("copilotstudio.duration_ms", duration)
-            span.set_attribute("copilotstudio.error.type", type(ex).__name__)
-            span.set_attribute("copilotstudio.error.message", str(ex))
+                # ---------- Status ----------
+                span.set_attribute("copilotstudio.status", "Success")
+                span.set_status(Status(StatusCode.OK))
 
-            span.record_exception(ex)
-            span.set_status(Status(StatusCode.ERROR))
+                await context.yield_output(response_text)
 
-            raise
+            except Exception as ex:
+
+                duration = (time.perf_counter() - start) * 1000
+
+                span.set_attribute("copilotstudio.status", "Failed")
+                span.set_attribute("copilotstudio.duration_ms", duration)
+                span.set_attribute("copilotstudio.error.type", type(ex).__name__)
+                span.set_attribute("copilotstudio.error.message", str(ex))
+
+                span.record_exception(ex)
+                span.set_status(Status(StatusCode.ERROR))
+
+                raise
