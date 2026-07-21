@@ -1,337 +1,92 @@
-import os
+async def ask(self, question: str) -> str:
+    tracer = trace.get_tracer("copilotstudio-agent")
 
-from dotenv import load_dotenv
-from azure.monitor.opentelemetry import configure_azure_monitor
-from agent_framework.observability import enable_instrumentation
-
-
-load_dotenv()
-
-connection_string = os.getenv(
-    "APPLICATIONINSIGHTS_CONNECTION_STRING"
-)
-
-if not connection_string:
-    raise ValueError(
-        "APPLICATIONINSIGHTS_CONNECTION_STRING is missing in .env"
+    # Explicitly create an independent root span
+    span = tracer.start_span(
+        "copilotstudio.hr.invoke",
+        context=Context(),
     )
 
+    print(
+        "copilotstudio.hr.invoke recording:",
+        span.is_recording()
+    )
 
-# Configure Azure Monitor first
-configure_azure_monitor(
-    connection_string=connection_string,
-)
+    start_time = time.perf_counter()
 
-
-# Enable Microsoft Agent Framework tracing
-enable_instrumentation(
-    enable_sensitive_data=True
-)
-
-
-print("MAF tracing enabled")
-
-
-
-
-
-
-
-
-
-
-import time
-import uuid
-from datetime import datetime, timezone
-
-from agent_framework import Executor, WorkflowContext, handler
-from hr_agent import HRAgent as HRCopilotAgent
-
-from opentelemetry import trace
-from opentelemetry.trace import Status, StatusCode
-
-
-class HRAgent(Executor):
-
-    def __init__(self, id: str):
-        super().__init__(id=id)
-        self.hr_agent = HRCopilotAgent()
-
-    @handler
-    async def process(
-        self,
-        message: str,
-        context: WorkflowContext[str],
-    ) -> None:
-
-        # Get the tracer here, after tracing.py has configured Azure Monitor
-        tracer = trace.get_tracer(
-            "maf-copilot-orchestrator"
-        )
-
-        conversation_id = str(uuid.uuid4())
-        request_id = str(uuid.uuid4())
-
-        with tracer.start_as_current_span(
-            "copilotstudio.hr.invoke"
-        ) as span:
-
-            print(
-                "copilotstudio.hr.invoke recording:",
-                span.is_recording()
-            )
-
-            start = time.perf_counter()
-            start_time = datetime.now(
-                timezone.utc
-            ).isoformat()
-
-            # Agent details
+    with trace.use_span(
+        span,
+        end_on_exit=True,
+    ):
+        try:
             span.set_attribute(
                 "copilotstudio.agent_name",
-                "HR Agent"
+                "HR Agent",
             )
 
-            span.set_attribute(
-                "copilotstudio.agent_identifier",
-                getattr(
-                    self.hr_agent,
-                    "agent_identifier",
-                    "HR Copilot Agent"
-                )
-            )
-
-            span.set_attribute(
-                "copilotstudio.environment_id",
-                getattr(
-                    self.hr_agent,
-                    "environment_id",
-                    "Not exposed"
-                )
-            )
-
-            # Workflow details
-            span.set_attribute(
-                "workflow.name",
-                "HR and IT Workflow"
-            )
-
-            span.set_attribute(
-                "executor.id",
-                self.id
-            )
-
-            # Request details
             span.set_attribute(
                 "copilotstudio.prompt",
-                str(message)
+                question,
             )
 
             span.set_attribute(
                 "copilotstudio.prompt_length",
-                len(str(message))
+                len(question),
+            )
+
+            response = await self.agent.run(question)
+
+            response_text = str(response)
+
+            span.set_attribute(
+                "copilotstudio.response",
+                response_text,
             )
 
             span.set_attribute(
-                "copilotstudio.request_id",
-                request_id
+                "copilotstudio.response_length",
+                len(response_text),
             )
 
             span.set_attribute(
-                "copilotstudio.conversation_id",
-                conversation_id
+                "copilotstudio.duration_ms",
+                (time.perf_counter() - start_time) * 1000,
             )
 
             span.set_attribute(
-                "copilotstudio.start_time",
-                start_time
+                "copilotstudio.status",
+                "success",
             )
 
-            try:
-                print("Calling Copilot Studio HR Agent...")
-
-                response = await self.hr_agent.ask(
-                    message
-                )
-
-                response_text = str(response)
-
-                duration_ms = (
-                    time.perf_counter() - start
-                ) * 1000
-
-                # Response details
-                span.set_attribute(
-                    "copilotstudio.response",
-                    response_text
-                )
-
-                span.set_attribute(
-                    "copilotstudio.response_length",
-                    len(response_text)
-                )
-
-                span.set_attribute(
-                    "copilotstudio.response_type",
-                    type(response).__name__
-                )
-
-                span.set_attribute(
-                    "copilotstudio.end_time",
-                    datetime.now(
-                        timezone.utc
-                    ).isoformat()
-                )
-
-                span.set_attribute(
-                    "copilotstudio.duration_ms",
-                    duration_ms
-                )
-
-                span.set_attribute(
-                    "copilotstudio.status",
-                    "Success"
-                )
-
-                span.set_status(
-                    Status(StatusCode.OK)
-                )
-
-                await context.yield_output(
-                    response_text
-                )
-
-            except Exception as error:
-                duration_ms = (
-                    time.perf_counter() - start
-                ) * 1000
-
-                span.set_attribute(
-                    "copilotstudio.end_time",
-                    datetime.now(
-                        timezone.utc
-                    ).isoformat()
-                )
-
-                span.set_attribute(
-                    "copilotstudio.duration_ms",
-                    duration_ms
-                )
-
-                span.set_attribute(
-                    "copilotstudio.status",
-                    "Failed"
-                )
-
-                span.set_attribute(
-                    "copilotstudio.error.type",
-                    type(error).__name__
-                )
-
-                span.set_attribute(
-                    "copilotstudio.error.message",
-                    str(error)
-                )
-
-                span.record_exception(error)
-
-                span.set_status(
-                    Status(
-                        StatusCode.ERROR,
-                        str(error)
-                    )
-                )
-
-                raise
-
-
-class ITAgent(Executor):
-
-    def __init__(self, id: str):
-        super().__init__(id=id)
-
-    @handler
-    async def process(
-        self,
-        message: str,
-        context: WorkflowContext[str],
-    ) -> None:
-
-        print("Processing ITAgentExecutor...")
-
-        await context.yield_output(
-            f"IT Response: {message}"
-        )
-
-
-
-
-
-
-
-
-# This must be the first project import
-import tracing
-
-import asyncio
-
-from opentelemetry import trace
-from agent_framework import WorkflowBuilder
-
-from executors import HRAgent, ITAgent
-
-
-async def main():
-
-    hr = HRAgent(id="hr")
-    it = ITAgent(id="it")
-
-    workflow = (
-        WorkflowBuilder(
-            start_executor=hr,
-            name="HR and IT Workflow",
-        )
-        .add_edge(hr, it)
-        .build()
-    )
-
-    try:
-        result = await workflow.run(
-            "Tell me about code of conduct"
-        )
-
-        print("\nWorkflow result:")
-        print(result)
-
-    except Exception as error:
-        print("\nWorkflow failed:")
-        print(error)
-
-    finally:
-        # Important for short-running console applications
-        provider = trace.get_tracer_provider()
-
-        force_flush = getattr(
-            provider,
-            "force_flush",
-            None
-        )
-
-        if callable(force_flush):
-            print("Flushing telemetry...")
-
-            flushed = force_flush(
-                timeout_millis=15000
+            span.set_status(
+                Status(StatusCode.OK)
             )
 
-            print(
-                "Telemetry flush result:",
-                flushed
+            return response_text
+
+        except Exception as error:
+            span.set_attribute(
+                "copilotstudio.status",
+                "failed",
             )
 
+            span.set_attribute(
+                "copilotstudio.error_type",
+                type(error).__name__,
+            )
 
-if __name__ == "__main__":
-    asyncio.run(main())
+            span.set_attribute(
+                "copilotstudio.error_message",
+                str(error),
+            )
 
+            span.record_exception(error)
 
+            span.set_status(
+                Status(
+                    StatusCode.ERROR,
+                    str(error),
+                )
+            )
 
+            raise
