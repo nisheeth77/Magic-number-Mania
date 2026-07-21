@@ -1,118 +1,102 @@
-.assistant-visual {
-    position: relative;
-    z-index: 2;
+import tracing  # Must remain first
 
-    width: 360px;
-    height: 420px;
+import asyncio
 
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
+from agent_framework import WorkflowBuilder
+from executors import HRAgent, ITAgent
+from opentelemetry import trace
+from opentelemetry.trace import Status, StatusCode
 
 
-.avatar-glow {
-    position: absolute;
-
-    width: 280px;
-    height: 280px;
-
-    border-radius: 50%;
-
-    background: rgba(105, 56, 239, 0.22);
-
-    filter: blur(55px);
-}
+tracer = trace.get_tracer("maf-copilot-orchestrator")
 
 
-.assistant-image-frame {
-    position: relative;
-    z-index: 2;
+async def main():
 
-    width: 330px;
-    height: 390px;
+    hr = HRAgent(id="hr")
+    it = ITAgent(id="it")
 
-    display: flex;
-    align-items: flex-end;
-    justify-content: center;
+    workflow = (
+        WorkflowBuilder(
+            start_executor=hr,
+            name="HR and IT Workflow",
+        )
+        .add_edge(hr, it)
+        .build()
+    )
 
-    overflow: hidden;
+    provider = trace.get_tracer_provider()
 
-    border: 1px solid rgba(105, 56, 239, 0.18);
-    border-radius: 50% 50% 44% 44%;
+    try:
+        # Manual parent span
+        with tracer.start_as_current_span(
+            "workflow.run.manual"
+        ) as span:
 
-    background:
-        radial-gradient(
-            circle at center,
-            rgba(255, 255, 255, 1),
-            rgba(236, 232, 250, 0.92)
-        );
+            span.set_attribute(
+                "workflow.name",
+                "HR and IT Workflow"
+            )
 
-    box-shadow:
-        0 24px 60px rgba(59, 43, 103, 0.18),
-        inset 0 0 45px rgba(105, 56, 239, 0.07);
-}
+            span.set_attribute(
+                "workflow.input",
+                "Tell me about code of conduct"
+            )
+
+            try:
+                result = await workflow.run(
+                    "Tell me about code of conduct"
+                )
+
+                span.set_attribute(
+                    "workflow.status",
+                    "Success"
+                )
+
+                span.set_status(
+                    Status(StatusCode.OK)
+                )
+
+                print(result)
+
+            except Exception as error:
+
+                span.set_attribute(
+                    "workflow.status",
+                    "Failed"
+                )
+
+                span.set_attribute(
+                    "workflow.error.type",
+                    type(error).__name__
+                )
+
+                span.set_attribute(
+                    "workflow.error.message",
+                    str(error)
+                )
+
+                span.record_exception(error)
+
+                span.set_status(
+                    Status(
+                        StatusCode.ERROR,
+                        str(error)
+                    )
+                )
+
+                raise
+
+    finally:
+        if hasattr(provider, "force_flush"):
+            print("Flushing telemetry...")
+
+            provider.force_flush(
+                timeout_millis=10000
+            )
+
+            print("Telemetry flushed")
 
 
-.assistant-image {
-    position: relative;
-    z-index: 2;
-
-    width: 100%;
-    height: 100%;
-
-    object-fit: contain;
-    object-position: center bottom;
-
-    user-select: none;
-    pointer-events: none;
-}
-
-
-.speaking-ring {
-    position: absolute;
-    inset: 10px;
-
-    z-index: 1;
-
-    border: 2px solid rgba(105, 56, 239, 0.25);
-    border-radius: 50% 50% 44% 44%;
-
-    opacity: 0;
-    transform: scale(0.96);
-
-    transition:
-        opacity 0.25s ease,
-        transform 0.25s ease;
-}
-
-
-/* Add the speaking class from JavaScript later if required */
-.assistant-image-frame.speaking .speaking-ring {
-    opacity: 1;
-
-    animation:
-        speakingPulse 1.4s ease-in-out infinite;
-}
-
-
-.assistant-image-frame.speaking {
-    box-shadow:
-        0 24px 65px rgba(105, 56, 239, 0.28),
-        0 0 0 8px rgba(105, 56, 239, 0.08),
-        inset 0 0 45px rgba(105, 56, 239, 0.08);
-}
-
-
-@keyframes speakingPulse {
-    0%,
-    100% {
-        opacity: 0.35;
-        transform: scale(0.97);
-    }
-
-    50% {
-        opacity: 1;
-        transform: scale(1.02);
-    }
-}
+if __name__ == "__main__":
+    asyncio.run(main())
