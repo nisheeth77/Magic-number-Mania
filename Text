@@ -1,92 +1,43 @@
-async def ask(self, question: str) -> str:
-    tracer = trace.get_tracer("copilotstudio-agent")
+from agent_framework import Executor, WorkflowContext, handler
+from hr_agent import HRAgent as HRCopilotAgent
 
-    # Explicitly create an independent root span
-    span = tracer.start_span(
-        "copilotstudio.hr.invoke",
-        context=Context(),
-    )
 
-    print(
-        "copilotstudio.hr.invoke recording:",
-        span.is_recording()
-    )
+class HRAgent(Executor):
 
-    start_time = time.perf_counter()
+    def __init__(self, id: str):
+        super().__init__(id=id)
+        self.hr_agent = HRCopilotAgent()
 
-    with trace.use_span(
-        span,
-        end_on_exit=True,
-    ):
-        try:
-            span.set_attribute(
-                "copilotstudio.agent_name",
-                "HR Agent",
-            )
+    @handler
+    async def process(
+        self,
+        message: str,
+        context: WorkflowContext[str],
+    ) -> None:
 
-            span.set_attribute(
-                "copilotstudio.prompt",
-                question,
-            )
+        print("Calling Copilot Studio HR Agent...")
 
-            span.set_attribute(
-                "copilotstudio.prompt_length",
-                len(question),
-            )
+        response = await self.hr_agent.ask(message)
 
-            response = await self.agent.run(question)
+        response_text = str(response)
 
-            response_text = str(response)
+        await context.yield_output(response_text)
 
-            span.set_attribute(
-                "copilotstudio.response",
-                response_text,
-            )
 
-            span.set_attribute(
-                "copilotstudio.response_length",
-                len(response_text),
-            )
+class ITAgent(Executor):
 
-            span.set_attribute(
-                "copilotstudio.duration_ms",
-                (time.perf_counter() - start_time) * 1000,
-            )
+    def __init__(self, id: str):
+        super().__init__(id=id)
 
-            span.set_attribute(
-                "copilotstudio.status",
-                "success",
-            )
+    @handler
+    async def process(
+        self,
+        message: str,
+        context: WorkflowContext[str],
+    ) -> None:
 
-            span.set_status(
-                Status(StatusCode.OK)
-            )
+        print("Processing IT Agent...")
 
-            return response_text
-
-        except Exception as error:
-            span.set_attribute(
-                "copilotstudio.status",
-                "failed",
-            )
-
-            span.set_attribute(
-                "copilotstudio.error_type",
-                type(error).__name__,
-            )
-
-            span.set_attribute(
-                "copilotstudio.error_message",
-                str(error),
-            )
-
-            span.record_exception(error)
-
-            span.set_status(
-                Status(
-                    StatusCode.ERROR,
-                    str(error),
-                )
-            )
-
-            raise
+        await context.yield_output(
+            f"IT Response: {message}"
+        )
