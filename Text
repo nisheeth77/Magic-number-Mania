@@ -1,6 +1,5 @@
 app.py
 
-
 import asyncio
 import json
 import logging
@@ -14,14 +13,14 @@ import uvicorn
 from azure.identity.aio import AzureCliCredential
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 
-# ---------------------------------------------------------------------------
-# Environment
-# ---------------------------------------------------------------------------
+# ============================================================
+# Environment configuration
+# ============================================================
 
 load_dotenv()
 
@@ -31,14 +30,14 @@ VOICE_LIVE_API_VERSION = os.getenv(
     "2026-04-10",
 )
 
-PROJECT_NAME = os.getenv("PROJECT_NAME", "")
-AGENT_NAME = os.getenv("AGENT_NAME", "")
-AGENT_VERSION = os.getenv("AGENT_VERSION") or None
+PROJECT_NAME = os.getenv("PROJECT_NAME", "").strip()
+AGENT_NAME = os.getenv("AGENT_NAME", "").strip()
+AGENT_VERSION = os.getenv("AGENT_VERSION", "").strip()
 
 HOST = os.getenv("HOST", "127.0.0.1")
 PORT = int(os.getenv("PORT", "8000"))
 
-TOKEN_SCOPE = "https://ai.azure.com/.default"
+AZURE_TOKEN_SCOPE = "https://ai.azure.com/.default"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -48,9 +47,9 @@ logging.basicConfig(
 logger = logging.getLogger("voice-avatar")
 
 
-# ---------------------------------------------------------------------------
-# Validation
-# ---------------------------------------------------------------------------
+# ============================================================
+# Validation and URL generation
+# ============================================================
 
 def validate_environment() -> None:
     missing = []
@@ -66,48 +65,58 @@ def validate_environment() -> None:
 
     if missing:
         raise RuntimeError(
-            "Missing required environment variables: "
-            + ", ".join(missing)
+            "Missing environment variables: " + ", ".join(missing)
         )
 
-
-def build_voice_live_websocket_url() -> str:
-    """
-    Builds the Azure Voice Live WebRTC signaling URL.
-
-    The browser sends its WebRTC SDP offer to this FastAPI backend.
-    This backend forwards it to Azure through the /realtime/calls endpoint.
-    """
-
-    endpoint = VOICE_LIVE_ENDPOINT
-
-    if endpoint.startswith("https://"):
-        websocket_base = "wss://" + endpoint[len("https://"):]
-    elif endpoint.startswith("http://"):
-        websocket_base = "ws://" + endpoint[len("http://"):]
-    else:
+    if not VOICE_LIVE_ENDPOINT.startswith(
+        ("https://", "http://")
+    ):
         raise RuntimeError(
             "VOICELIVE_ENDPOINT must start with https:// or http://"
         )
 
+
+def build_azure_control_url() -> str:
+    """
+    Build the Voice Live WebRTC control-channel URL.
+
+    Example:
+    wss://resource.services.ai.azure.com/voice-live/realtime/calls
+        ?api-version=2026-04-10
+        &agent-project-name=du-telco
+        &agent-name=VoiceAgentDUTelco
+        &agent-version=23
+    """
+
+    if VOICE_LIVE_ENDPOINT.startswith("https://"):
+        ws_endpoint = (
+            "wss://"
+            + VOICE_LIVE_ENDPOINT.removeprefix("https://")
+        )
+    else:
+        ws_endpoint = (
+            "ws://"
+            + VOICE_LIVE_ENDPOINT.removeprefix("http://")
+        )
+
     query = {
         "api-version": VOICE_LIVE_API_VERSION,
-        "agent-name": AGENT_NAME,
         "agent-project-name": PROJECT_NAME,
+        "agent-name": AGENT_NAME,
     }
 
     if AGENT_VERSION:
         query["agent-version"] = AGENT_VERSION
 
     return (
-        f"{websocket_base}/voice-live/realtime/calls?"
+        f"{ws_endpoint}/voice-live/realtime/calls?"
         f"{urlencode(query)}"
     )
 
 
-# ---------------------------------------------------------------------------
-# Application lifecycle
-# ---------------------------------------------------------------------------
+# ============================================================
+# FastAPI lifecycle
+# ============================================================
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -116,11 +125,11 @@ async def lifespan(app: FastAPI):
     credential = AzureCliCredential()
     http_session = aiohttp.ClientSession()
 
-    app.state.credential = credential
+    app.state.azure_credential = credential
     app.state.http_session = http_session
 
     logger.info("Voice Avatar backend started")
-    logger.info("Voice Live endpoint: %s", VOICE_LIVE_ENDPOINT)
+    logger.info("Endpoint: %s", VOICE_LIVE_ENDPOINT)
     logger.info("Project: %s", PROJECT_NAME)
     logger.info("Agent: %s", AGENT_NAME)
     logger.info("Agent version: %s", AGENT_VERSION or "latest")
@@ -140,11 +149,6 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-
-# ---------------------------------------------------------------------------
-# Static frontend
-# ---------------------------------------------------------------------------
-
 app.mount(
     "/static",
     StaticFiles(directory="static"),
@@ -154,18 +158,16 @@ app.mount(
 templates = Jinja2Templates(directory="templates")
 
 
-# ---------------------------------------------------------------------------
+# ============================================================
 # HTTP routes
-# ---------------------------------------------------------------------------
+# ============================================================
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
     return templates.TemplateResponse(
         request=request,
         name="index.html",
-        context={
-            "request": request,
-        },
+        context={"request": request},
     )
 
 
@@ -173,61 +175,50 @@ async def home(request: Request):
 async def health():
     return {
         "status": "healthy",
-        "project_name": PROJECT_NAME,
-        "agent_name": AGENT_NAME,
-        "agent_version": AGENT_VERSION,
+        "architecture": "webrtc",
+        "project": PROJECT_NAME,
+        "agent": AGENT_NAME,
+        "agent_version": AGENT_VERSION or "latest",
         "api_version": VOICE_LIVE_API_VERSION,
     }
 
 
 @app.get("/config")
-async def frontend_config():
+async def config():
     """
-    Returns only non-secret frontend configuration.
+    Only safe browser configuration is returned.
 
-    Azure tokens and API keys are never returned to the browser.
+    Azure endpoint, access token and credentials stay on the backend.
     """
 
-    return JSONResponse(
-        {
-            "signalingUrl": "/ws/signaling",
-            "avatar": {
-                "character": "lisa",
-                "customized": False,
-                "outputProtocol": "webrtc",
-                "resolution": {
-                    "width": 1280,
-                    "height": 720,
-                },
-            },
-        }
-    )
+    return {
+        "signalingUrl": "/ws/signaling",
+        "avatar": {
+            "character": "lisa",
+            "style": "casual-sitting",
+        },
+    }
 
 
-# ---------------------------------------------------------------------------
-# WebSocket forwarding helpers
-# ---------------------------------------------------------------------------
+# ============================================================
+# WebSocket proxy helpers
+# ============================================================
 
-async def browser_to_azure(
+async def forward_browser_to_azure(
     browser_ws: WebSocket,
     azure_ws: aiohttp.ClientWebSocketResponse,
 ) -> None:
-    """
-    Forward signaling and session messages from the browser to Azure.
-    """
-
     while True:
-        message = await browser_ws.receive()
+        browser_message = await browser_ws.receive()
 
-        message_type = message.get("type")
+        message_type = browser_message.get("type")
 
         if message_type == "websocket.disconnect":
-            break
+            return
 
-        text = message.get("text")
+        text = browser_message.get("text")
 
         if text is not None:
-            # Validate that the message is valid JSON before forwarding.
             try:
                 payload = json.loads(text)
             except json.JSONDecodeError:
@@ -235,54 +226,51 @@ async def browser_to_azure(
                     {
                         "type": "proxy.error",
                         "error": {
-                            "message": "Browser sent invalid JSON."
+                            "message": "Invalid JSON sent by browser."
                         },
                     }
                 )
                 continue
 
-            logger.debug(
-                "Browser -> Azure: %s",
-                payload.get("type", "unknown"),
-            )
+            event_type = payload.get("type", "unknown")
+            logger.info("Browser -> Azure: %s", event_type)
 
             await azure_ws.send_str(
                 json.dumps(payload)
             )
 
-        binary = message.get("bytes")
+        binary = browser_message.get("bytes")
 
         if binary is not None:
             await azure_ws.send_bytes(binary)
 
 
-async def azure_to_browser(
+async def forward_azure_to_browser(
     azure_ws: aiohttp.ClientWebSocketResponse,
     browser_ws: WebSocket,
 ) -> None:
-    """
-    Forward Azure Voice Live events back to the browser.
-    """
+    async for azure_message in azure_ws:
 
-    async for message in azure_ws:
-        if message.type == aiohttp.WSMsgType.TEXT:
+        if azure_message.type == aiohttp.WSMsgType.TEXT:
             try:
-                payload = json.loads(message.data)
+                payload = json.loads(azure_message.data)
+                event_type = payload.get("type", "unknown")
 
-                logger.debug(
-                    "Azure -> Browser: %s",
-                    payload.get("type", "unknown"),
-                )
+                logger.info("Azure -> Browser: %s", event_type)
 
                 await browser_ws.send_json(payload)
 
             except json.JSONDecodeError:
-                await browser_ws.send_text(message.data)
+                await browser_ws.send_text(
+                    azure_message.data
+                )
 
-        elif message.type == aiohttp.WSMsgType.BINARY:
-            await browser_ws.send_bytes(message.data)
+        elif azure_message.type == aiohttp.WSMsgType.BINARY:
+            await browser_ws.send_bytes(
+                azure_message.data
+            )
 
-        elif message.type == aiohttp.WSMsgType.ERROR:
+        elif azure_message.type == aiohttp.WSMsgType.ERROR:
             error = azure_ws.exception()
 
             logger.error(
@@ -298,81 +286,91 @@ async def azure_to_browser(
                     },
                 }
             )
-            break
+            return
 
-        elif message.type in {
+        elif azure_message.type in {
             aiohttp.WSMsgType.CLOSE,
             aiohttp.WSMsgType.CLOSED,
             aiohttp.WSMsgType.CLOSING,
         }:
-            break
+            return
 
 
-# ---------------------------------------------------------------------------
-# WebRTC signaling WebSocket
-# ---------------------------------------------------------------------------
+# ============================================================
+# WebRTC signaling/control WebSocket
+# ============================================================
 
 @app.websocket("/ws/signaling")
-async def signaling_websocket(browser_ws: WebSocket):
+async def signaling_websocket(
+    browser_ws: WebSocket,
+):
     await browser_ws.accept()
 
-    azure_ws: Optional[aiohttp.ClientWebSocketResponse] = None
+    azure_ws: Optional[
+        aiohttp.ClientWebSocketResponse
+    ] = None
 
     try:
         credential: AzureCliCredential = (
-            browser_ws.app.state.credential
+            browser_ws.app.state.azure_credential
         )
 
         http_session: aiohttp.ClientSession = (
             browser_ws.app.state.http_session
         )
 
-        logger.info("Getting Azure access token")
+        logger.info("Requesting Azure access token")
 
-        token = await credential.get_token(TOKEN_SCOPE)
+        access_token = await credential.get_token(
+            AZURE_TOKEN_SCOPE
+        )
 
-        azure_url = build_voice_live_websocket_url()
+        azure_control_url = build_azure_control_url()
 
-        logger.info("Connecting to Azure Voice Live WebRTC signaling")
+        logger.info(
+            "Opening Azure Voice Live WebRTC control channel"
+        )
 
         azure_ws = await http_session.ws_connect(
-            azure_url,
+            azure_control_url,
             headers={
-                "Authorization": f"Bearer {token.token}",
+                "Authorization": (
+                    f"Bearer {access_token.token}"
+                ),
             },
             protocols=["realtime"],
             heartbeat=30,
-            receive_timeout=None,
             max_msg_size=16 * 1024 * 1024,
         )
 
         await browser_ws.send_json(
             {
                 "type": "proxy.connected",
-                "agent": {
-                    "name": AGENT_NAME,
-                    "project": PROJECT_NAME,
-                    "version": AGENT_VERSION,
-                },
+                "message": (
+                    "Secure Voice Live control channel connected."
+                ),
             }
         )
 
-        browser_task = asyncio.create_task(
-            browser_to_azure(
+        browser_to_azure_task = asyncio.create_task(
+            forward_browser_to_azure(
                 browser_ws,
                 azure_ws,
             )
         )
 
-        azure_task = asyncio.create_task(
-            azure_to_browser(
+        azure_to_browser_task = asyncio.create_task(
+            forward_azure_to_browser(
                 azure_ws,
                 browser_ws,
             )
         )
 
         done, pending = await asyncio.wait(
-            {browser_task, azure_task},
+            {
+                browser_to_azure_task,
+                azure_to_browser_task,
+            },
             return_when=asyncio.FIRST_COMPLETED,
         )
 
@@ -385,6 +383,9 @@ async def signaling_websocket(browser_ws: WebSocket):
         )
 
         for task in done:
+            if task.cancelled():
+                continue
+
             exception = task.exception()
 
             if exception:
@@ -395,7 +396,7 @@ async def signaling_websocket(browser_ws: WebSocket):
 
     except aiohttp.WSServerHandshakeError as exc:
         logger.exception(
-            "Azure rejected the WebSocket connection"
+            "Azure rejected the WebSocket handshake"
         )
 
         try:
@@ -404,8 +405,8 @@ async def signaling_websocket(browser_ws: WebSocket):
                     "type": "proxy.error",
                     "error": {
                         "message": (
-                            "Azure rejected the Voice Live connection. "
-                            f"HTTP status: {exc.status}"
+                            "Azure rejected the Voice Live "
+                            f"connection with HTTP {exc.status}."
                         )
                     },
                 }
@@ -415,7 +416,7 @@ async def signaling_websocket(browser_ws: WebSocket):
 
     except Exception as exc:
         logger.exception(
-            "Voice Live signaling failed"
+            "Voice Live signaling session failed"
         )
 
         try:
@@ -439,12 +440,12 @@ async def signaling_websocket(browser_ws: WebSocket):
         except Exception:
             pass
 
-        logger.info("Signaling session closed")
+        logger.info("Voice Live signaling session closed")
 
 
-# ---------------------------------------------------------------------------
-# Local entry point
-# ---------------------------------------------------------------------------
+# ============================================================
+# Run locally
+# ============================================================
 
 if __name__ == "__main__":
     uvicorn.run(
