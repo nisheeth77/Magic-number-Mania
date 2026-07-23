@@ -1,67 +1,68 @@
+app.py
+
+
 import asyncio
 import json
 import logging
 import os
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Optional
+from urllib.parse import urlencode
 
-from azure.ai.voicelive.aio import connect
-from azure.ai.voicelive.models import AgentSessionConfig
+import aiohttp
+import uvicorn
 from azure.identity.aio import AzureCliCredential
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 
-# ---------------------------------------------------------
-# Environment configuration
-# ---------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Environment
+# ---------------------------------------------------------------------------
 
 load_dotenv()
 
 VOICE_LIVE_ENDPOINT = os.getenv("VOICELIVE_ENDPOINT", "").rstrip("/")
-PROJECT_NAME = os.getenv("PROJECT_NAME", "")
-AGENT_NAME = os.getenv("AGENT_NAME", "")
-AGENT_VERSION = os.getenv("AGENT_VERSION", "")
 VOICE_LIVE_API_VERSION = os.getenv(
     "VOICELIVE_API_VERSION",
-    "2026-01-01-preview",
+    "2026-04-10",
 )
+
+PROJECT_NAME = os.getenv("PROJECT_NAME", "")
+AGENT_NAME = os.getenv("AGENT_NAME", "")
+AGENT_VERSION = os.getenv("AGENT_VERSION") or None
 
 HOST = os.getenv("HOST", "127.0.0.1")
 PORT = int(os.getenv("PORT", "8000"))
 
-
-# ---------------------------------------------------------
-# Logging
-# ---------------------------------------------------------
+TOKEN_SCOPE = "https://ai.azure.com/.default"
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 
-logger = logging.getLogger("dubai-telco-avatar")
+logger = logging.getLogger("voice-avatar")
 
 
-# ---------------------------------------------------------
+# ---------------------------------------------------------------------------
 # Validation
-# ---------------------------------------------------------
+# ---------------------------------------------------------------------------
 
 def validate_environment() -> None:
     missing = []
 
-    required_variables = {
-        "VOICELIVE_ENDPOINT": VOICE_LIVE_ENDPOINT,
-        "PROJECT_NAME": PROJECT_NAME,
-        "AGENT_NAME": AGENT_NAME,
-    }
+    if not VOICE_LIVE_ENDPOINT:
+        missing.append("VOICELIVE_ENDPOINT")
 
-    for variable_name, value in required_variables.items():
-        if not value:
-            missing.append(variable_name)
+    if not PROJECT_NAME:
+        missing.append("PROJECT_NAME")
+
+    if not AGENT_NAME:
+        missing.append("AGENT_NAME")
 
     if missing:
         raise RuntimeError(
@@ -70,39 +71,79 @@ def validate_environment() -> None:
         )
 
 
-# ---------------------------------------------------------
+def build_voice_live_websocket_url() -> str:
+    """
+    Builds the Azure Voice Live WebRTC signaling URL.
+
+    The browser sends its WebRTC SDP offer to this FastAPI backend.
+    This backend forwards it to Azure through the /realtime/calls endpoint.
+    """
+
+    endpoint = VOICE_LIVE_ENDPOINT
+
+    if endpoint.startswith("https://"):
+        websocket_base = "wss://" + endpoint[len("https://"):]
+    elif endpoint.startswith("http://"):
+        websocket_base = "ws://" + endpoint[len("http://"):]
+    else:
+        raise RuntimeError(
+            "VOICELIVE_ENDPOINT must start with https:// or http://"
+        )
+
+    query = {
+        "api-version": VOICE_LIVE_API_VERSION,
+        "agent-name": AGENT_NAME,
+        "agent-project-name": PROJECT_NAME,
+    }
+
+    if AGENT_VERSION:
+        query["agent-version"] = AGENT_VERSION
+
+    return (
+        f"{websocket_base}/voice-live/realtime/calls?"
+        f"{urlencode(query)}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Application lifecycle
-# ---------------------------------------------------------
+# ---------------------------------------------------------------------------
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     validate_environment()
 
     credential = AzureCliCredential()
-    app.state.azure_credential = credential
+    http_session = aiohttp.ClientSession()
 
-    logger.info("Application started")
+    app.state.credential = credential
+    app.state.http_session = http_session
+
+    logger.info("Voice Avatar backend started")
     logger.info("Voice Live endpoint: %s", VOICE_LIVE_ENDPOINT)
     logger.info("Project: %s", PROJECT_NAME)
     logger.info("Agent: %s", AGENT_NAME)
+    logger.info("Agent version: %s", AGENT_VERSION or "latest")
+    logger.info("API version: %s", VOICE_LIVE_API_VERSION)
 
     try:
         yield
     finally:
+        await http_session.close()
         await credential.close()
-        logger.info("Azure credential closed")
+        logger.info("Voice Avatar backend stopped")
 
 
 app = FastAPI(
-    title="Dubai Telco Avatar Voice Agent",
+    title="DU Voice Avatar",
     version="1.0.0",
     lifespan=lifespan,
 )
 
 
-# ---------------------------------------------------------
-# Static files and templates
-# ---------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Static frontend
+# ---------------------------------------------------------------------------
 
 app.mount(
     "/static",
@@ -113,9 +154,9 @@ app.mount(
 templates = Jinja2Templates(directory="templates")
 
 
-# ---------------------------------------------------------
-# Basic routes
-# ---------------------------------------------------------
+# ---------------------------------------------------------------------------
+# HTTP routes
+# ---------------------------------------------------------------------------
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
@@ -123,9 +164,7 @@ async def home(request: Request):
         request=request,
         name="index.html",
         context={
-            "voice_live_endpoint": VOICE_LIVE_ENDPOINT,
-            "model": "",
-            "api_version": VOICE_LIVE_API_VERSION,
+            "request": request,
         },
     )
 
@@ -134,351 +173,284 @@ async def home(request: Request):
 async def health():
     return {
         "status": "healthy",
-        "service": "Dubai Telco Avatar Voice Agent",
-        "voice_live_configured": bool(VOICE_LIVE_ENDPOINT),
-        "project_configured": bool(PROJECT_NAME),
-        "agent_configured": bool(AGENT_NAME),
-        "agent_version": AGENT_VERSION or "latest",
-    }
-
-
-# ---------------------------------------------------------
-# Utility functions
-# ---------------------------------------------------------
-
-async def send_browser_event(
-    browser_socket: WebSocket,
-    event_type: str,
-    **data: Any,
-) -> None:
-    """
-    Send an application-level JSON event to the browser.
-    """
-
-    payload = {
-        "type": event_type,
-        **data,
-    }
-
-    await browser_socket.send_json(payload)
-
-
-def create_agent_config() -> AgentSessionConfig:
-    """
-    Identify the existing Foundry Voice Live agent.
-
-    The voice, avatar, instructions, VAD and knowledge configuration
-    should already be stored in the agent configuration.
-    """
-
-    config_data: dict[str, Any] = {
         "project_name": PROJECT_NAME,
         "agent_name": AGENT_NAME,
+        "agent_version": AGENT_VERSION,
+        "api_version": VOICE_LIVE_API_VERSION,
     }
 
-    if AGENT_VERSION:
-        config_data["agent_version"] = AGENT_VERSION
 
-    return AgentSessionConfig(**config_data)
-
-
-def serialize_voice_live_event(event: Any) -> dict[str, Any]:
+@app.get("/config")
+async def frontend_config():
     """
-    Convert an Azure SDK event into a JSON-compatible dictionary.
+    Returns only non-secret frontend configuration.
+
+    Azure tokens and API keys are never returned to the browser.
     """
 
-    if isinstance(event, dict):
-        return event
-
-    if hasattr(event, "as_dict"):
-        return event.as_dict()
-
-    if hasattr(event, "model_dump"):
-        return event.model_dump(
-            mode="json",
-            exclude_none=True,
-        )
-
-    if hasattr(event, "__dict__"):
-        return {
-            key: value
-            for key, value in vars(event).items()
-            if not key.startswith("_")
+    return JSONResponse(
+        {
+            "signalingUrl": "/ws/signaling",
+            "avatar": {
+                "character": "lisa",
+                "customized": False,
+                "outputProtocol": "webrtc",
+                "resolution": {
+                    "width": 1280,
+                    "height": 720,
+                },
+            },
         }
-
-    return {
-        "type": "unknown",
-        "value": str(event),
-    }
-
-
-async def send_event_to_voice_live(
-    connection: Any,
-    event: dict[str, Any],
-) -> None:
-    """
-    Send a browser-generated Voice Live event to Azure.
-
-    Different preview SDK builds expose either send() or
-    send_event(), so both are supported here.
-    """
-
-    if hasattr(connection, "send"):
-        await connection.send(event)
-        return
-
-    if hasattr(connection, "send_event"):
-        await connection.send_event(event)
-        return
-
-    raise RuntimeError(
-        "The installed azure-ai-voicelive package does not expose "
-        "send() or send_event()."
     )
 
 
-async def receive_voice_live_event(connection: Any) -> Any:
-    """
-    Receive one event from the Azure Voice Live connection.
-    """
+# ---------------------------------------------------------------------------
+# WebSocket forwarding helpers
+# ---------------------------------------------------------------------------
 
-    if hasattr(connection, "recv"):
-        return await connection.recv()
-
-    if hasattr(connection, "receive"):
-        return await connection.receive()
-
-    raise RuntimeError(
-        "The installed azure-ai-voicelive package does not expose "
-        "recv() or receive()."
-    )
-
-
-# ---------------------------------------------------------
-# Browser -> Azure
-# ---------------------------------------------------------
-
-async def browser_to_voice_live(
-    browser_socket: WebSocket,
-    voice_connection: Any,
+async def browser_to_azure(
+    browser_ws: WebSocket,
+    azure_ws: aiohttp.ClientWebSocketResponse,
 ) -> None:
     """
-    Forward browser messages to Azure Voice Live.
-
-    JSON is used for:
-    - session events
-    - SDP/WebRTC negotiation
-    - transcript/control events
-
-    Binary data is used for:
-    - PCM microphone audio, when the architecture requires it
+    Forward signaling and session messages from the browser to Azure.
     """
 
     while True:
-        browser_message = await browser_socket.receive()
+        message = await browser_ws.receive()
 
-        message_type = browser_message.get("type")
+        message_type = message.get("type")
 
         if message_type == "websocket.disconnect":
-            raise WebSocketDisconnect()
+            break
 
-        text_data = browser_message.get("text")
-        binary_data = browser_message.get("bytes")
+        text = message.get("text")
 
-        if text_data is not None:
+        if text is not None:
+            # Validate that the message is valid JSON before forwarding.
             try:
-                event = json.loads(text_data)
-            except json.JSONDecodeError as exc:
-                logger.warning(
-                    "Invalid JSON received from browser: %s",
-                    exc,
-                )
-
-                await send_browser_event(
-                    browser_socket,
-                    "application.error",
-                    message="Invalid JSON event sent by the browser.",
+                payload = json.loads(text)
+            except json.JSONDecodeError:
+                await browser_ws.send_json(
+                    {
+                        "type": "proxy.error",
+                        "error": {
+                            "message": "Browser sent invalid JSON."
+                        },
+                    }
                 )
                 continue
 
-            event_type = event.get("type", "unknown")
-            logger.debug("Browser -> Voice Live: %s", event_type)
-
-            await send_event_to_voice_live(
-                voice_connection,
-                event,
+            logger.debug(
+                "Browser -> Azure: %s",
+                payload.get("type", "unknown"),
             )
 
-        elif binary_data is not None:
-            # Retained for the WebSocket-audio architecture.
-            # The next app.js version will normally send microphone
-            # audio through the Voice Live WebRTC audio track.
-            audio_event = {
-                "type": "input_audio_buffer.append",
-                "audio": binary_data,
-            }
-
-            await send_event_to_voice_live(
-                voice_connection,
-                audio_event,
+            await azure_ws.send_str(
+                json.dumps(payload)
             )
 
+        binary = message.get("bytes")
 
-# ---------------------------------------------------------
-# Azure -> Browser
-# ---------------------------------------------------------
+        if binary is not None:
+            await azure_ws.send_bytes(binary)
 
-async def voice_live_to_browser(
-    browser_socket: WebSocket,
-    voice_connection: Any,
+
+async def azure_to_browser(
+    azure_ws: aiohttp.ClientWebSocketResponse,
+    browser_ws: WebSocket,
 ) -> None:
     """
-    Forward Voice Live events to the browser.
-
-    app.js will process events such as:
-    - session.updated
-    - session.avatar.connecting
-    - session.avatar.connected
-    - conversation.item.input_audio_transcription.*
-    - response.audio_transcript.*
-    - input_audio_buffer.speech_started
-    - input_audio_buffer.speech_stopped
-    - response.created
-    - response.done
-    - error
+    Forward Azure Voice Live events back to the browser.
     """
 
-    while True:
-        azure_event = await receive_voice_live_event(
-            voice_connection
-        )
+    async for message in azure_ws:
+        if message.type == aiohttp.WSMsgType.TEXT:
+            try:
+                payload = json.loads(message.data)
 
-        if azure_event is None:
-            logger.info("Voice Live connection returned no event")
-            return
+                logger.debug(
+                    "Azure -> Browser: %s",
+                    payload.get("type", "unknown"),
+                )
 
-        event_payload = serialize_voice_live_event(azure_event)
-        event_type = event_payload.get("type", "unknown")
+                await browser_ws.send_json(payload)
 
-        logger.debug("Voice Live -> Browser: %s", event_type)
+            except json.JSONDecodeError:
+                await browser_ws.send_text(message.data)
 
-        await browser_socket.send_text(
-            json.dumps(
-                event_payload,
-                default=str,
+        elif message.type == aiohttp.WSMsgType.BINARY:
+            await browser_ws.send_bytes(message.data)
+
+        elif message.type == aiohttp.WSMsgType.ERROR:
+            error = azure_ws.exception()
+
+            logger.error(
+                "Azure WebSocket error: %s",
+                error,
             )
-        )
+
+            await browser_ws.send_json(
+                {
+                    "type": "proxy.error",
+                    "error": {
+                        "message": str(error)
+                    },
+                }
+            )
+            break
+
+        elif message.type in {
+            aiohttp.WSMsgType.CLOSE,
+            aiohttp.WSMsgType.CLOSED,
+            aiohttp.WSMsgType.CLOSING,
+        }:
+            break
 
 
-# ---------------------------------------------------------
-# Main WebSocket endpoint
-# ---------------------------------------------------------
+# ---------------------------------------------------------------------------
+# WebRTC signaling WebSocket
+# ---------------------------------------------------------------------------
 
-@app.websocket("/ws/voice")
-async def voice_websocket(browser_socket: WebSocket):
-    await browser_socket.accept()
+@app.websocket("/ws/signaling")
+async def signaling_websocket(browser_ws: WebSocket):
+    await browser_ws.accept()
 
-    logger.info("Browser WebSocket connected")
-
-    await send_browser_event(
-        browser_socket,
-        "application.connecting",
-        message="Connecting to Azure Voice Live...",
-    )
-
-    credential: AzureCliCredential = (
-        browser_socket.app.state.azure_credential
-    )
+    azure_ws: Optional[aiohttp.ClientWebSocketResponse] = None
 
     try:
-        agent_config = create_agent_config()
+        credential: AzureCliCredential = (
+            browser_ws.app.state.credential
+        )
 
-        async with connect(
-            endpoint=VOICE_LIVE_ENDPOINT,
-            credential=credential,
-            api_version=VOICE_LIVE_API_VERSION,
-            agent_config=agent_config,
-        ) as voice_connection:
+        http_session: aiohttp.ClientSession = (
+            browser_ws.app.state.http_session
+        )
 
-            logger.info("Connected to Azure Voice Live")
+        logger.info("Getting Azure access token")
 
-            await send_browser_event(
-                browser_socket,
-                "application.connected",
-                message="Connected to Azure Voice Live.",
+        token = await credential.get_token(TOKEN_SCOPE)
+
+        azure_url = build_voice_live_websocket_url()
+
+        logger.info("Connecting to Azure Voice Live WebRTC signaling")
+
+        azure_ws = await http_session.ws_connect(
+            azure_url,
+            headers={
+                "Authorization": f"Bearer {token.token}",
+            },
+            protocols=["realtime"],
+            heartbeat=30,
+            receive_timeout=None,
+            max_msg_size=16 * 1024 * 1024,
+        )
+
+        await browser_ws.send_json(
+            {
+                "type": "proxy.connected",
+                "agent": {
+                    "name": AGENT_NAME,
+                    "project": PROJECT_NAME,
+                    "version": AGENT_VERSION,
+                },
+            }
+        )
+
+        browser_task = asyncio.create_task(
+            browser_to_azure(
+                browser_ws,
+                azure_ws,
             )
+        )
 
-            browser_task = asyncio.create_task(
-                browser_to_voice_live(
-                    browser_socket,
-                    voice_connection,
-                )
+        azure_task = asyncio.create_task(
+            azure_to_browser(
+                azure_ws,
+                browser_ws,
             )
+        )
 
-            azure_task = asyncio.create_task(
-                voice_live_to_browser(
-                    browser_socket,
-                    voice_connection,
-                )
-            )
+        done, pending = await asyncio.wait(
+            {browser_task, azure_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
 
-            done, pending = await asyncio.wait(
-                {browser_task, azure_task},
-                return_when=asyncio.FIRST_COMPLETED,
-            )
+        for task in pending:
+            task.cancel()
 
-            for task in pending:
-                task.cancel()
+        await asyncio.gather(
+            *pending,
+            return_exceptions=True,
+        )
 
-            await asyncio.gather(
-                *pending,
-                return_exceptions=True,
-            )
+        for task in done:
+            exception = task.exception()
 
-            for task in done:
-                exception = task.exception()
-
-                if exception:
-                    raise exception
+            if exception:
+                raise exception
 
     except WebSocketDisconnect:
         logger.info("Browser disconnected")
 
-    except asyncio.CancelledError:
-        logger.info("Voice session cancelled")
-        raise
-
-    except Exception as exc:
-        logger.exception("Voice session failed")
+    except aiohttp.WSServerHandshakeError as exc:
+        logger.exception(
+            "Azure rejected the WebSocket connection"
+        )
 
         try:
-            await send_browser_event(
-                browser_socket,
-                "application.error",
-                message=str(exc),
+            await browser_ws.send_json(
+                {
+                    "type": "proxy.error",
+                    "error": {
+                        "message": (
+                            "Azure rejected the Voice Live connection. "
+                            f"HTTP status: {exc.status}"
+                        )
+                    },
+                }
+            )
+        except Exception:
+            pass
+
+    except Exception as exc:
+        logger.exception(
+            "Voice Live signaling failed"
+        )
+
+        try:
+            await browser_ws.send_json(
+                {
+                    "type": "proxy.error",
+                    "error": {
+                        "message": str(exc)
+                    },
+                }
             )
         except Exception:
             pass
 
     finally:
+        if azure_ws is not None and not azure_ws.closed:
+            await azure_ws.close()
+
         try:
-            await browser_socket.close()
+            await browser_ws.close()
         except Exception:
             pass
 
-        logger.info("Voice session closed")
+        logger.info("Signaling session closed")
 
 
-# ---------------------------------------------------------
+# ---------------------------------------------------------------------------
 # Local entry point
-# ---------------------------------------------------------
+# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    import uvicorn
-
     uvicorn.run(
         "app:app",
         host=HOST,
         port=PORT,
         reload=True,
+        log_level="info",
     )
