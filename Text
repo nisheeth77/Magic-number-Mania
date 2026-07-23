@@ -1,37 +1,56 @@
+import os
+
+from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from dotenv import load_dotenv
-import os
 
 load_dotenv()
 
-app = FastAPI()
+app = FastAPI(title="Voice Live Avatar")
 
-app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount(
+    "/static",
+    StaticFiles(directory="static"),
+    name="static",
+)
 
 templates = Jinja2Templates(directory="templates")
 
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-
     return templates.TemplateResponse(
-        "index.html",
-        {
-            "request": request,
-            "voice_live_endpoint": os.getenv("VOICE_LIVE_ENDPOINT"),
-            "api_key": os.getenv("VOICE_LIVE_API_KEY"),
-            "model": os.getenv("VOICE_MODEL"),
-            "api_version": "2026-01-01-preview"
-        }
+        request=request,
+        name="index.html",
+        context={
+            "voice_live_endpoint": os.getenv("VOICE_LIVE_ENDPOINT", ""),
+            "api_key": os.getenv("VOICE_LIVE_API_KEY", ""),
+            "model": os.getenv("VOICE_MODEL", ""),
+            "api_version": "2026-01-01-preview",
+        },
     )
 
 
 @app.get("/health")
 async def health():
+    return {"status": "running"}
 
-    return {
-        "status": "running"
-    }
+
+
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+    <title>Voice Avatar</title>
+</head>
+<body>
+    <h1>Voice Avatar UI is running</h1>
+</body>
+</html>
