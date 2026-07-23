@@ -1,43 +1,98 @@
-from agent_framework import Executor, WorkflowContext, handler
-from hr_agent import HRAgent as HRCopilotAgent
+I am building a production-ready real-time Voice Agent UI using Azure AI Foundry Voice Live.
+Current Status
+I already have a working application built using:
+Python FastAPI
+HTML/CSS/JavaScript
+Azure AI Foundry Voice Agent
+Azure Voice Live
+Azure CLI Authentication
+azure-ai-voicelive==1.3.0b1
+Current functionality:
+User speaks through browser microphone.
+Audio is sent to Azure Voice Live.
+Azure AI Foundry Voice Agent generates responses.
+Audio response is played in the browser.
+Live transcript is displayed.
+Multi-language conversation works (English, Hindi, Arabic, Urdu).
+Hindi TTS is already fixed.
+Everything is working correctly.
+The UI is modern and already resembles Microsoft's demo.
+New Requirement
+My manager wants the assistant to look like a real human.
+The avatar should:
+Speak the generated response.
+Lip sync perfectly.
+Blink.
+Move naturally.
+Behave like Microsoft's demo.
+The avatar selected in Azure AI Foundry is:
+Lisa
+Talking Avatar is already enabled.
+Important Decision
+We decided NOT to retrofit WebRTC into the existing backend.
+Instead, we will rebuild the application following the official Microsoft Voice Live WebRTC architecture.
+Architecture:
+Browser
+   │
+   ├── WebRTC (Audio + Video)
+   │
+   ▼
+Azure Voice Live
+   │
+Azure AI Foundry Voice Agent
+   │
+Knowledge + Grounding
 
-
-class HRAgent(Executor):
-
-    def __init__(self, id: str):
-        super().__init__(id=id)
-        self.hr_agent = HRCopilotAgent()
-
-    @handler
-    async def process(
-        self,
-        message: str,
-        context: WorkflowContext[str],
-    ) -> None:
-
-        print("Calling Copilot Studio HR Agent...")
-
-        response = await self.hr_agent.ask(message)
-
-        response_text = str(response)
-
-        await context.yield_output(response_text)
-
-
-class ITAgent(Executor):
-
-    def __init__(self, id: str):
-        super().__init__(id=id)
-
-    @handler
-    async def process(
-        self,
-        message: str,
-        context: WorkflowContext[str],
-    ) -> None:
-
-        print("Processing IT Agent...")
-
-        await context.yield_output(
-            f"IT Response: {message}"
-        )
+FastAPI
+   │
+Serves UI only
+The browser should connect directly to Azure Voice Live using WebRTC.
+FastAPI should only:
+serve HTML
+serve CSS
+serve JavaScript
+optionally expose configuration
+No media should pass through FastAPI.
+Requirements
+I do NOT want an approximate solution.
+Use ONLY the latest official Microsoft implementation.
+Research:
+Azure Voice Live API
+Azure Voice Live WebRTC
+Azure AI Foundry Voice Agent
+Azure Avatar
+Lisa Avatar
+Official Microsoft samples
+Official Microsoft GitHub repositories
+Official Microsoft Learn documentation
+Do NOT invent APIs.
+If Microsoft's SDK changed, use the newest supported implementation.
+Deliverables
+Generate a complete production-ready project.
+Project structure:
+voice-avatar/
+│
+├── app.py
+├── requirements.txt
+├── .env
+│
+├── templates/
+│      index.html
+│
+└── static/
+       app.js
+       style.css
+Provide complete code for every file.
+No placeholders.
+No pseudo-code.
+No skipped sections.
+Use best practices.
+The UI should closely resemble Microsoft's Voice Live demo.
+Coding Style
+Build step by step.
+Explain why each change is needed.
+Use production-quality code.
+Don't assume anything.
+Verify every API against Microsoft's latest documentation before generating code.
+If documentation differs from older samples, always use the latest official approach.
+Let's start with app.py.
