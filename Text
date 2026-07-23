@@ -1,880 +1,484 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-
-    <meta
-        name="viewport"
-        content="width=device-width, initial-scale=1.0"
-    >
-
-    <title>DU Virtual Assistant</title>
-
-    <link
-        rel="stylesheet"
-        href="{{ url_for('static', path='style.css') }}"
-    >
-</head>
-
-<body>
-
-<div class="application-shell">
-
-    <!-- Header -->
-    <header class="top-header">
-
-        <div class="brand">
-
-            <div class="brand-logo">
-                du
-            </div>
-
-            <div class="brand-text">
-                <h1>Customer Support</h1>
-                <p>AI-powered voice assistance</p>
-            </div>
-
-        </div>
-
-        <div class="header-status">
-
-            <span
-                id="statusDot"
-                class="status-dot disconnected"
-            ></span>
-
-            <span id="connectionStatus">
-                Disconnected
-            </span>
-
-        </div>
-
-    </header>
-
-
-    <!-- Main workspace -->
-    <main class="workspace">
-
-        <!-- Conversation panel -->
-        <section class="conversation-panel">
-
-            <div class="panel-heading">
-
-                <div>
-                    <p class="eyebrow">
-                        LIVE CONVERSATION
-                    </p>
-
-                    <h2>
-                        How can we help you?
-                    </h2>
-                </div>
-
-                <div
-                    id="callDuration"
-                    class="call-duration"
-                >
-                    00:00
-                </div>
-
-            </div>
-
-
-            <div
-                id="transcriptContainer"
-                class="transcript-container"
-                aria-live="polite"
-            >
-
-                <div class="welcome-card">
-
-                    <div class="welcome-icon">
-                        ✦
-                    </div>
-
-                    <div>
-                        <h3>Hello! I’m Lisa</h3>
-
-                        <p>
-                            Start the call and speak naturally.
-                            I can assist you in English, Hindi,
-                            Arabic and Urdu.
-                        </p>
-                    </div>
-
-                </div>
-
-            </div>
-
-
-            <!-- Current transcription -->
-            <div class="live-transcription">
-
-                <div class="transcription-row">
-
-                    <span class="speaker-label user-label">
-                        You
-                    </span>
-
-                    <p id="userTranscript">
-                        Your speech will appear here.
-                    </p>
-
-                </div>
-
-                <div class="transcription-row">
-
-                    <span class="speaker-label assistant-label">
-                        Lisa
-                    </span>
-
-                    <p id="agentTranscript">
-                        Lisa's response will appear here.
-                    </p>
-
-                </div>
-
-            </div>
-
-
-            <!-- Call controls -->
-            <div class="call-controls">
-
-                <button
-                    id="callButton"
-                    class="call-button start"
-                    type="button"
-                >
-
-                    <span
-                        id="callButtonIcon"
-                        class="call-button-icon"
-                    >
-                        🎙
-                    </span>
-
-                    <span id="callButtonText">
-                        Start Call
-                    </span>
-
-                </button>
-
-                <p
-                    id="message"
-                    class="call-message"
-                    role="status"
-                >
-                    Click Start Call to connect with Lisa.
-                </p>
-
-            </div>
-
-        </section>
-
-
-        <!-- Avatar panel -->
-        <section class="assistant-panel">
-
-            <div class="assistant-background-circle"></div>
-
-            <div class="avatar-card">
-
-                <div class="avatar-heading">
-
-                    <div>
-                        <p class="eyebrow">
-                            VIRTUAL ASSISTANT
-                        </p>
-
-                        <h2>Lisa</h2>
-                    </div>
-
-                    <span
-                        id="assistantState"
-                        class="assistant-state"
-                    >
-                        Offline
-                    </span>
-
-                </div>
-
-
-                <div class="avatar-video-container">
-
-                    <!-- Azure sends Lisa's synchronized
-                         video and audio through WebRTC. -->
-                    <video
-                        id="avatarVideo"
-                        autoplay
-                        playsinline
-                    ></video>
-
-
-                    <!-- Fallback displayed before WebRTC connects -->
-                    <div
-                        id="avatarPlaceholder"
-                        class="avatar-placeholder"
-                    >
-
-                        <div class="placeholder-avatar">
-
-                            <div class="placeholder-head">
-                                <div class="placeholder-hair"></div>
-                                <div class="placeholder-face"></div>
-                            </div>
-
-                            <div class="placeholder-body"></div>
-
-                        </div>
-
-                        <div
-                            id="avatarLoading"
-                            class="avatar-loading"
-                        >
-                            <span class="loading-dot"></span>
-                            <span class="loading-dot"></span>
-                            <span class="loading-dot"></span>
-                        </div>
-
-                        <p id="avatarStatusText">
-                            Lisa is ready when you are
-                        </p>
-
-                    </div>
-
-
-                    <div
-                        id="speakingIndicator"
-                        class="speaking-indicator"
-                    >
-                        <span></span>
-                        <span></span>
-                        <span></span>
-                        <span></span>
-                    </div>
-
-                </div>
-
-
-                <div class="assistant-features">
-
-                    <span>Real-time</span>
-                    <span>Multilingual</span>
-                    <span>Secure</span>
-
-                </div>
-
-            </div>
-
-        </section>
-
-    </main>
-
-
-    <footer class="footer">
-
-        <p>
-            Your microphone is used only during the active call.
-        </p>
-
-        <p>
-            Powered by Azure AI Foundry Voice Live
-        </p>
-
-    </footer>
-
-</div>
-
-
-<!--
-    Temporary local-development configuration.
-
-    We will read these values from app.js.
-    Do not expose a permanent Azure API key this way
-    when deploying the application publicly.
--->
-<script id="voiceLiveConfig" type="application/json">
-{
-    "endpoint": {{ voice_live_endpoint | tojson }},
-    "apiKey": {{ api_key | tojson }},
-    "model": {{ model | tojson }},
-    "apiVersion": {{ api_version | tojson }},
-    "avatarCharacter": "lisa",
-    "avatarStyle": "casual-sitting"
-}
-</script>
-
-<script
-    src="{{ url_for('static', path='app.js') }}"
-    defer
-></script>
-
-</body>
-</html>
-
-
-
-
-
-"use strict";
-
-const configElement = document.getElementById("voiceLiveConfig");
-
-let voiceLiveConfig = {};
-
-try {
-    voiceLiveConfig = JSON.parse(configElement.textContent);
-    console.log("Voice Live configuration loaded.");
-} catch (error) {
-    console.error("Invalid Voice Live configuration:", error);
-}
-
-const callButton = document.getElementById("callButton");
-const message = document.getElementById("message");
-
-callButton.addEventListener("click", () => {
-    message.textContent =
-        "UI is ready. WebRTC connection will be added next.";
-});
-
-
-
-
-
-
-
-
-
-* {
-    box-sizing: border-box;
-}
-
-body {
-    margin: 0;
-    min-height: 100vh;
-    font-family:
-        Inter,
-        "Segoe UI",
-        Arial,
-        sans-serif;
-    color: #132238;
-    background:
-        linear-gradient(135deg, #f6f9ff 0%, #eef4ff 100%);
-}
-
-button {
-    font: inherit;
-}
-
-.application-shell {
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-}
-
-.top-header {
-    min-height: 82px;
-    padding: 16px 36px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    background: rgba(255, 255, 255, 0.92);
-    border-bottom: 1px solid #e4eaf3;
-}
-
-.brand,
-.header-status,
-.avatar-heading,
-.panel-heading,
-.transcription-row,
-.call-controls,
-.assistant-features,
-.footer {
-    display: flex;
-    align-items: center;
-}
-
-.brand {
-    gap: 14px;
-}
-
-.brand-logo {
-    width: 50px;
-    height: 50px;
-    display: grid;
-    place-items: center;
-    border-radius: 15px;
-    color: white;
-    font-size: 22px;
-    font-weight: 800;
-    background: linear-gradient(135deg, #00a9ce, #6438c8);
-}
-
-.brand-text h1,
-.brand-text p,
-.panel-heading h2,
-.eyebrow,
-.avatar-heading h2,
-.welcome-card h3,
-.welcome-card p,
-.transcription-row p,
-.call-message,
-.footer p,
-.avatar-placeholder p {
-    margin: 0;
-}
-
-.brand-text h1 {
-    font-size: 18px;
-}
-
-.brand-text p {
-    margin-top: 3px;
-    color: #6c798b;
-    font-size: 13px;
-}
-
-.header-status {
-    gap: 8px;
-    color: #526174;
-    font-size: 14px;
-}
-
-.status-dot {
-    width: 9px;
-    height: 9px;
-    border-radius: 50%;
-}
-
-.status-dot.disconnected {
-    background: #8d99a8;
-}
-
-.status-dot.connecting {
-    background: #f59e0b;
-}
-
-.status-dot.connected {
-    background: #10b981;
-}
-
-.workspace {
-    width: min(1460px, 100%);
-    margin: 0 auto;
-    padding: 28px 36px;
-    flex: 1;
-    display: grid;
-    grid-template-columns: minmax(0, 1.1fr) minmax(420px, 0.9fr);
-    gap: 24px;
-}
-
-.conversation-panel,
-.avatar-card {
-    background: rgba(255, 255, 255, 0.96);
-    border: 1px solid #e2e9f3;
-    border-radius: 26px;
-    box-shadow: 0 18px 55px rgba(40, 65, 110, 0.09);
-}
-
-.conversation-panel {
-    padding: 26px;
-    display: flex;
-    flex-direction: column;
-    min-height: 680px;
-}
-
-.panel-heading {
-    justify-content: space-between;
-    gap: 16px;
-}
-
-.eyebrow {
-    color: #68778c;
-    font-size: 11px;
-    font-weight: 800;
-    letter-spacing: 1.7px;
-}
-
-.panel-heading h2,
-.avatar-heading h2 {
-    margin-top: 5px;
-    font-size: 26px;
-}
-
-.call-duration {
-    padding: 9px 14px;
-    border: 1px solid #e1e7f0;
-    border-radius: 12px;
-    background: #f7f9fc;
-    font-variant-numeric: tabular-nums;
-    font-weight: 700;
-}
-
-.transcript-container {
-    margin-top: 22px;
-    padding: 18px;
-    flex: 1;
-    overflow-y: auto;
-    border-radius: 20px;
-    background: #f7f9fd;
-    border: 1px solid #e8edf5;
-}
-
-.welcome-card {
-    display: flex;
-    gap: 13px;
-    padding: 17px;
-    border-radius: 17px;
-    background: white;
-    border: 1px solid #e3eaf4;
-}
-
-.welcome-icon {
-    width: 40px;
-    height: 40px;
-    flex: 0 0 auto;
-    display: grid;
-    place-items: center;
-    border-radius: 13px;
-    color: white;
-    background: linear-gradient(135deg, #00a9ce, #6438c8);
-}
-
-.welcome-card h3 {
-    font-size: 16px;
-}
-
-.welcome-card p {
-    margin-top: 5px;
-    color: #677589;
-    line-height: 1.55;
-    font-size: 14px;
-}
-
-.live-transcription {
-    margin-top: 18px;
-    padding: 14px 16px;
-    border-radius: 16px;
-    border: 1px solid #e5ebf3;
-}
-
-.transcription-row {
-    align-items: flex-start;
-    gap: 12px;
-    padding: 7px 0;
-}
-
-.speaker-label {
-    min-width: 48px;
-    padding: 4px 7px;
-    border-radius: 7px;
-    text-align: center;
-    font-size: 11px;
-    font-weight: 800;
-}
-
-.user-label {
-    color: #006c83;
-    background: #dff8fd;
-}
-
-.assistant-label {
-    color: #5529aa;
-    background: #eee6ff;
-}
-
-.transcription-row p {
-    color: #5d6b7e;
-    line-height: 1.5;
-    font-size: 14px;
-}
-
-.call-controls {
-    margin-top: 20px;
-    flex-direction: column;
-    justify-content: center;
-    gap: 10px;
-}
-
-.call-button {
-    min-width: 190px;
-    padding: 14px 24px;
-    border: 0;
-    border-radius: 999px;
-    cursor: pointer;
-    color: white;
-    font-weight: 750;
-    box-shadow: 0 12px 28px rgba(0, 139, 178, 0.23);
-}
-
-.call-button.start {
-    background: linear-gradient(135deg, #00a9ce, #1773d1);
-}
-
-.call-button.end {
-    background: linear-gradient(135deg, #ec3f57, #c92742);
-}
-
-.call-button:disabled {
-    cursor: wait;
-    opacity: 0.65;
-}
-
-.call-button-icon {
-    margin-right: 7px;
-}
-
-.call-message {
-    color: #667487;
-    text-align: center;
-    font-size: 13px;
-}
-
-.assistant-panel {
-    position: relative;
-    min-height: 680px;
-}
-
-.assistant-background-circle {
-    position: absolute;
-    width: 360px;
-    height: 360px;
-    top: 80px;
-    left: 50%;
-    transform: translateX(-50%);
-    border-radius: 50%;
-    background: rgba(91, 69, 210, 0.1);
-    filter: blur(2px);
-}
-
-.avatar-card {
-    height: 100%;
-    padding: 26px;
-    position: relative;
-    z-index: 1;
-}
-
-.avatar-heading {
-    justify-content: space-between;
-}
-
-.assistant-state {
-    padding: 7px 11px;
-    border-radius: 999px;
-    color: #687589;
-    background: #eff2f7;
-    font-size: 12px;
-    font-weight: 750;
-}
-
-.avatar-video-container {
-    height: 515px;
-    margin-top: 20px;
-    position: relative;
-    overflow: hidden;
-    border-radius: 22px;
-    background:
-        radial-gradient(circle at 50% 35%, #eff2ff, #dce5f6);
-}
-
-#avatarVideo {
-    width: 100%;
-    height: 100%;
-    display: none;
-    object-fit: cover;
-    background: #e9eef8;
-}
-
-.avatar-placeholder {
-    width: 100%;
-    height: 100%;
-    padding: 28px;
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    flex-direction: column;
-}
-
-.placeholder-avatar {
-    width: 220px;
-    height: 365px;
-    position: relative;
-}
-
-.placeholder-head {
-    width: 145px;
-    height: 175px;
-    margin: 0 auto;
-    position: relative;
-}
-
-.placeholder-hair {
-    position: absolute;
-    inset: 0;
-    border-radius: 52% 52% 43% 43%;
-    background: #3c2a2d;
-}
-
-.placeholder-face {
-    position: absolute;
-    width: 104px;
-    height: 132px;
-    top: 25px;
-    left: 21px;
-    border-radius: 48% 48% 45% 45%;
-    background: #d9a27e;
-}
-
-.placeholder-body {
-    width: 210px;
-    height: 210px;
-    margin: -2px auto 0;
-    border-radius: 52% 52% 12% 12%;
-    background: linear-gradient(145deg, #31425e, #172439);
-}
-
-.avatar-loading {
-    margin-top: 12px;
-    display: none;
-    gap: 6px;
-}
-
-.loading-dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: #5770d7;
-    animation: loading 1s infinite alternate;
-}
-
-.loading-dot:nth-child(2) {
-    animation-delay: 0.2s;
-}
-
-.loading-dot:nth-child(3) {
-    animation-delay: 0.4s;
-}
-
-@keyframes loading {
-    from {
-        transform: translateY(0);
-        opacity: 0.45;
+import asyncio
+import json
+import logging
+import os
+from contextlib import asynccontextmanager
+from typing import Any
+
+from azure.ai.voicelive.aio import connect
+from azure.ai.voicelive.models import AgentSessionConfig
+from azure.identity.aio import AzureCliCredential
+from dotenv import load_dotenv
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+
+
+# ---------------------------------------------------------
+# Environment configuration
+# ---------------------------------------------------------
+
+load_dotenv()
+
+VOICE_LIVE_ENDPOINT = os.getenv("VOICELIVE_ENDPOINT", "").rstrip("/")
+PROJECT_NAME = os.getenv("PROJECT_NAME", "")
+AGENT_NAME = os.getenv("AGENT_NAME", "")
+AGENT_VERSION = os.getenv("AGENT_VERSION", "")
+VOICE_LIVE_API_VERSION = os.getenv(
+    "VOICELIVE_API_VERSION",
+    "2026-01-01-preview",
+)
+
+HOST = os.getenv("HOST", "127.0.0.1")
+PORT = int(os.getenv("PORT", "8000"))
+
+
+# ---------------------------------------------------------
+# Logging
+# ---------------------------------------------------------
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
+
+logger = logging.getLogger("dubai-telco-avatar")
+
+
+# ---------------------------------------------------------
+# Validation
+# ---------------------------------------------------------
+
+def validate_environment() -> None:
+    missing = []
+
+    required_variables = {
+        "VOICELIVE_ENDPOINT": VOICE_LIVE_ENDPOINT,
+        "PROJECT_NAME": PROJECT_NAME,
+        "AGENT_NAME": AGENT_NAME,
     }
 
-    to {
-        transform: translateY(-6px);
-        opacity: 1;
-    }
-}
+    for variable_name, value in required_variables.items():
+        if not value:
+            missing.append(variable_name)
 
-.avatar-placeholder p {
-    margin-top: 13px;
-    color: #617086;
-    font-size: 14px;
-}
+    if missing:
+        raise RuntimeError(
+            "Missing required environment variables: "
+            + ", ".join(missing)
+        )
 
-.speaking-indicator {
-    position: absolute;
-    right: 18px;
-    bottom: 18px;
-    height: 34px;
-    padding: 7px 10px;
-    display: none;
-    align-items: flex-end;
-    gap: 4px;
-    border-radius: 12px;
-    background: rgba(19, 31, 52, 0.78);
-}
 
-.speaking-indicator span {
-    width: 3px;
-    height: 9px;
-    border-radius: 3px;
-    background: white;
-    animation: speaking 0.6s infinite alternate;
-}
+# ---------------------------------------------------------
+# Application lifecycle
+# ---------------------------------------------------------
 
-.speaking-indicator span:nth-child(2) {
-    animation-delay: 0.15s;
-}
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    validate_environment()
 
-.speaking-indicator span:nth-child(3) {
-    animation-delay: 0.3s;
-}
+    credential = AzureCliCredential()
+    app.state.azure_credential = credential
 
-.speaking-indicator span:nth-child(4) {
-    animation-delay: 0.45s;
-}
+    logger.info("Application started")
+    logger.info("Voice Live endpoint: %s", VOICE_LIVE_ENDPOINT)
+    logger.info("Project: %s", PROJECT_NAME)
+    logger.info("Agent: %s", AGENT_NAME)
 
-@keyframes speaking {
-    to {
-        height: 21px;
-    }
-}
+    try:
+        yield
+    finally:
+        await credential.close()
+        logger.info("Azure credential closed")
 
-.assistant-features {
-    padding-top: 18px;
-    justify-content: center;
-    gap: 8px;
-}
 
-.assistant-features span {
-    padding: 7px 10px;
-    border-radius: 999px;
-    color: #647185;
-    background: #f0f3f8;
-    font-size: 11px;
-    font-weight: 700;
-}
+app = FastAPI(
+    title="Dubai Telco Avatar Voice Agent",
+    version="1.0.0",
+    lifespan=lifespan,
+)
 
-.footer {
-    min-height: 48px;
-    padding: 10px 36px;
-    justify-content: space-between;
-    color: #758195;
-    border-top: 1px solid #e4eaf3;
-    background: rgba(255, 255, 255, 0.85);
-    font-size: 12px;
-}
 
-@media (max-width: 980px) {
-    .workspace {
-        grid-template-columns: 1fr;
-    }
+# ---------------------------------------------------------
+# Static files and templates
+# ---------------------------------------------------------
 
-    .assistant-panel {
-        min-height: 620px;
-    }
-}
+app.mount(
+    "/static",
+    StaticFiles(directory="static"),
+    name="static",
+)
 
-@media (max-width: 620px) {
-    .top-header,
-    .workspace,
-    .footer {
-        padding-left: 16px;
-        padding-right: 16px;
+templates = Jinja2Templates(directory="templates")
+
+
+# ---------------------------------------------------------
+# Basic routes
+# ---------------------------------------------------------
+
+@app.get("/", response_class=HTMLResponse)
+async def home(request: Request):
+    return templates.TemplateResponse(
+        request=request,
+        name="index.html",
+        context={
+            "voice_live_endpoint": VOICE_LIVE_ENDPOINT,
+            "model": "",
+            "api_version": VOICE_LIVE_API_VERSION,
+        },
+    )
+
+
+@app.get("/health")
+async def health():
+    return {
+        "status": "healthy",
+        "service": "Dubai Telco Avatar Voice Agent",
+        "voice_live_configured": bool(VOICE_LIVE_ENDPOINT),
+        "project_configured": bool(PROJECT_NAME),
+        "agent_configured": bool(AGENT_NAME),
+        "agent_version": AGENT_VERSION or "latest",
     }
 
-    .brand-text p,
-    .header-status,
-    .footer p:last-child {
-        display: none;
+
+# ---------------------------------------------------------
+# Utility functions
+# ---------------------------------------------------------
+
+async def send_browser_event(
+    browser_socket: WebSocket,
+    event_type: str,
+    **data: Any,
+) -> None:
+    """
+    Send an application-level JSON event to the browser.
+    """
+
+    payload = {
+        "type": event_type,
+        **data,
     }
 
-    .workspace {
-        padding-top: 16px;
+    await browser_socket.send_json(payload)
+
+
+def create_agent_config() -> AgentSessionConfig:
+    """
+    Identify the existing Foundry Voice Live agent.
+
+    The voice, avatar, instructions, VAD and knowledge configuration
+    should already be stored in the agent configuration.
+    """
+
+    config_data: dict[str, Any] = {
+        "project_name": PROJECT_NAME,
+        "agent_name": AGENT_NAME,
     }
 
-    .conversation-panel,
-    .avatar-card {
-        padding: 18px;
-        border-radius: 20px;
+    if AGENT_VERSION:
+        config_data["agent_version"] = AGENT_VERSION
+
+    return AgentSessionConfig(**config_data)
+
+
+def serialize_voice_live_event(event: Any) -> dict[str, Any]:
+    """
+    Convert an Azure SDK event into a JSON-compatible dictionary.
+    """
+
+    if isinstance(event, dict):
+        return event
+
+    if hasattr(event, "as_dict"):
+        return event.as_dict()
+
+    if hasattr(event, "model_dump"):
+        return event.model_dump(
+            mode="json",
+            exclude_none=True,
+        )
+
+    if hasattr(event, "__dict__"):
+        return {
+            key: value
+            for key, value in vars(event).items()
+            if not key.startswith("_")
+        }
+
+    return {
+        "type": "unknown",
+        "value": str(event),
     }
 
-    .avatar-video-container {
-        height: 430px;
-    }
-}
+
+async def send_event_to_voice_live(
+    connection: Any,
+    event: dict[str, Any],
+) -> None:
+    """
+    Send a browser-generated Voice Live event to Azure.
+
+    Different preview SDK builds expose either send() or
+    send_event(), so both are supported here.
+    """
+
+    if hasattr(connection, "send"):
+        await connection.send(event)
+        return
+
+    if hasattr(connection, "send_event"):
+        await connection.send_event(event)
+        return
+
+    raise RuntimeError(
+        "The installed azure-ai-voicelive package does not expose "
+        "send() or send_event()."
+    )
 
 
+async def receive_voice_live_event(connection: Any) -> Any:
+    """
+    Receive one event from the Azure Voice Live connection.
+    """
 
+    if hasattr(connection, "recv"):
+        return await connection.recv()
+
+    if hasattr(connection, "receive"):
+        return await connection.receive()
+
+    raise RuntimeError(
+        "The installed azure-ai-voicelive package does not expose "
+        "recv() or receive()."
+    )
+
+
+# ---------------------------------------------------------
+# Browser -> Azure
+# ---------------------------------------------------------
+
+async def browser_to_voice_live(
+    browser_socket: WebSocket,
+    voice_connection: Any,
+) -> None:
+    """
+    Forward browser messages to Azure Voice Live.
+
+    JSON is used for:
+    - session events
+    - SDP/WebRTC negotiation
+    - transcript/control events
+
+    Binary data is used for:
+    - PCM microphone audio, when the architecture requires it
+    """
+
+    while True:
+        browser_message = await browser_socket.receive()
+
+        message_type = browser_message.get("type")
+
+        if message_type == "websocket.disconnect":
+            raise WebSocketDisconnect()
+
+        text_data = browser_message.get("text")
+        binary_data = browser_message.get("bytes")
+
+        if text_data is not None:
+            try:
+                event = json.loads(text_data)
+            except json.JSONDecodeError as exc:
+                logger.warning(
+                    "Invalid JSON received from browser: %s",
+                    exc,
+                )
+
+                await send_browser_event(
+                    browser_socket,
+                    "application.error",
+                    message="Invalid JSON event sent by the browser.",
+                )
+                continue
+
+            event_type = event.get("type", "unknown")
+            logger.debug("Browser -> Voice Live: %s", event_type)
+
+            await send_event_to_voice_live(
+                voice_connection,
+                event,
+            )
+
+        elif binary_data is not None:
+            # Retained for the WebSocket-audio architecture.
+            # The next app.js version will normally send microphone
+            # audio through the Voice Live WebRTC audio track.
+            audio_event = {
+                "type": "input_audio_buffer.append",
+                "audio": binary_data,
+            }
+
+            await send_event_to_voice_live(
+                voice_connection,
+                audio_event,
+            )
+
+
+# ---------------------------------------------------------
+# Azure -> Browser
+# ---------------------------------------------------------
+
+async def voice_live_to_browser(
+    browser_socket: WebSocket,
+    voice_connection: Any,
+) -> None:
+    """
+    Forward Voice Live events to the browser.
+
+    app.js will process events such as:
+    - session.updated
+    - session.avatar.connecting
+    - session.avatar.connected
+    - conversation.item.input_audio_transcription.*
+    - response.audio_transcript.*
+    - input_audio_buffer.speech_started
+    - input_audio_buffer.speech_stopped
+    - response.created
+    - response.done
+    - error
+    """
+
+    while True:
+        azure_event = await receive_voice_live_event(
+            voice_connection
+        )
+
+        if azure_event is None:
+            logger.info("Voice Live connection returned no event")
+            return
+
+        event_payload = serialize_voice_live_event(azure_event)
+        event_type = event_payload.get("type", "unknown")
+
+        logger.debug("Voice Live -> Browser: %s", event_type)
+
+        await browser_socket.send_text(
+            json.dumps(
+                event_payload,
+                default=str,
+            )
+        )
+
+
+# ---------------------------------------------------------
+# Main WebSocket endpoint
+# ---------------------------------------------------------
+
+@app.websocket("/ws/voice")
+async def voice_websocket(browser_socket: WebSocket):
+    await browser_socket.accept()
+
+    logger.info("Browser WebSocket connected")
+
+    await send_browser_event(
+        browser_socket,
+        "application.connecting",
+        message="Connecting to Azure Voice Live...",
+    )
+
+    credential: AzureCliCredential = (
+        browser_socket.app.state.azure_credential
+    )
+
+    try:
+        agent_config = create_agent_config()
+
+        async with connect(
+            endpoint=VOICE_LIVE_ENDPOINT,
+            credential=credential,
+            api_version=VOICE_LIVE_API_VERSION,
+            agent_config=agent_config,
+        ) as voice_connection:
+
+            logger.info("Connected to Azure Voice Live")
+
+            await send_browser_event(
+                browser_socket,
+                "application.connected",
+                message="Connected to Azure Voice Live.",
+            )
+
+            browser_task = asyncio.create_task(
+                browser_to_voice_live(
+                    browser_socket,
+                    voice_connection,
+                )
+            )
+
+            azure_task = asyncio.create_task(
+                voice_live_to_browser(
+                    browser_socket,
+                    voice_connection,
+                )
+            )
+
+            done, pending = await asyncio.wait(
+                {browser_task, azure_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            for task in pending:
+                task.cancel()
+
+            await asyncio.gather(
+                *pending,
+                return_exceptions=True,
+            )
+
+            for task in done:
+                exception = task.exception()
+
+                if exception:
+                    raise exception
+
+    except WebSocketDisconnect:
+        logger.info("Browser disconnected")
+
+    except asyncio.CancelledError:
+        logger.info("Voice session cancelled")
+        raise
+
+    except Exception as exc:
+        logger.exception("Voice session failed")
+
+        try:
+            await send_browser_event(
+                browser_socket,
+                "application.error",
+                message=str(exc),
+            )
+        except Exception:
+            pass
+
+    finally:
+        try:
+            await browser_socket.close()
+        except Exception:
+            pass
+
+        logger.info("Voice session closed")
+
+
+# ---------------------------------------------------------
+# Local entry point
+# ---------------------------------------------------------
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(
+        "app:app",
+        host=HOST,
+        port=PORT,
+        reload=True,
+    )
