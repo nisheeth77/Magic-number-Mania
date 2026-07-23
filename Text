@@ -455,3 +455,891 @@ if __name__ == "__main__":
         reload=True,
         log_level="info",
     )
+
+
+
+
+
+
+app.js
+
+
+"use strict";
+
+/* ============================================================
+   DU Voice Avatar — WebRTC frontend
+   ============================================================ */
+
+let appConfig = null;
+
+let peerConnection = null;
+let signalingSocket = null;
+let dataChannel = null;
+
+let localStream = null;
+let remoteStream = null;
+
+let callStartedAt = null;
+let timerInterval = null;
+
+let isCallActive = false;
+let isMuted = false;
+let isEndingCall = false;
+
+let currentUserTranscript = "";
+let currentAssistantTranscript = "";
+
+
+// ============================================================
+// DOM helpers
+// ============================================================
+
+function findElement(...ids) {
+    for (const id of ids) {
+        const element = document.getElementById(id);
+
+        if (element) {
+            return element;
+        }
+    }
+
+    return null;
+}
+
+const elements = {
+    startButton: findElement(
+        "startCallBtn",
+        "startCallButton",
+        "start-call-btn",
+        "startCall"
+    ),
+
+    endButton: findElement(
+        "endCallBtn",
+        "endCallButton",
+        "end-call-btn",
+        "endCall"
+    ),
+
+    muteButton: findElement(
+        "muteBtn",
+        "muteButton",
+        "mute-btn"
+    ),
+
+    statusText: findElement(
+        "statusText",
+        "callStatus",
+        "status",
+        "connectionStatus"
+    ),
+
+    statusDot: findElement(
+        "statusDot",
+        "status-dot",
+        "connectionStatusDot"
+    ),
+
+    timer: findElement(
+        "callTimer",
+        "timer",
+        "callDuration"
+    ),
+
+    video: findElement(
+        "avatarVideo",
+        "remoteVideo",
+        "videoElement",
+        "avatar-video"
+    ),
+
+    transcriptContainer: findElement(
+        "transcriptContainer",
+        "transcriptMessages",
+        "conversation",
+        "messages"
+    ),
+
+    userTranscript: findElement(
+        "userTranscript",
+        "user-transcript"
+    ),
+
+    assistantTranscript: findElement(
+        "agentTranscript",
+        "assistantTranscript",
+        "agent-transcript"
+    ),
+
+    avatarPlaceholder: findElement(
+        "avatarPlaceholder",
+        "avatar-placeholder",
+        "videoPlaceholder"
+    ),
+
+    listeningIndicator: findElement(
+        "listeningIndicator",
+        "listening-indicator"
+    ),
+
+    speakingIndicator: findElement(
+        "speakingIndicator",
+        "speaking-indicator"
+    )
+};
+
+
+// ============================================================
+// General utilities
+// ============================================================
+
+function log(message, data = null) {
+    const timestamp = new Date().toLocaleTimeString();
+
+    if (data !== null) {
+        console.log(`[${timestamp}] ${message}`, data);
+    } else {
+        console.log(`[${timestamp}] ${message}`);
+    }
+}
+
+function setStatus(message, state = "idle") {
+    if (elements.statusText) {
+        elements.statusText.textContent = message;
+    }
+
+    if (elements.statusDot) {
+        elements.statusDot.classList.remove(
+            "connected",
+            "connecting",
+            "error",
+            "listening",
+            "speaking",
+            "disconnected"
+        );
+
+        elements.statusDot.classList.add(state);
+    }
+}
+
+function setButtonState(active) {
+    if (elements.startButton) {
+        elements.startButton.disabled = active;
+    }
+
+    if (elements.endButton) {
+        elements.endButton.disabled = !active;
+    }
+
+    if (elements.muteButton) {
+        elements.muteButton.disabled = !active;
+    }
+}
+
+function setListening(isListening) {
+    if (elements.listeningIndicator) {
+        elements.listeningIndicator.hidden = !isListening;
+        elements.listeningIndicator.classList.toggle(
+            "active",
+            isListening
+        );
+    }
+
+    if (isListening) {
+        setStatus("Listening…", "listening");
+    }
+}
+
+function setSpeaking(isSpeaking) {
+    if (elements.speakingIndicator) {
+        elements.speakingIndicator.hidden = !isSpeaking;
+        elements.speakingIndicator.classList.toggle(
+            "active",
+            isSpeaking
+        );
+    }
+
+    if (isSpeaking) {
+        setStatus("Assistant speaking…", "speaking");
+    }
+}
+
+function getWebSocketUrl(path) {
+    const protocol =
+        window.location.protocol === "https:"
+            ? "wss:"
+            : "ws:";
+
+    return `${protocol}//${window.location.host}${path}`;
+}
+
+function wait(milliseconds) {
+    return new Promise((resolve) => {
+        setTimeout(resolve, milliseconds);
+    });
+}
+
+function waitForIceGatheringComplete(
+    connection,
+    timeoutMilliseconds = 5000
+) {
+    if (connection.iceGatheringState === "complete") {
+        return Promise.resolve();
+    }
+
+    return new Promise((resolve) => {
+        let finished = false;
+
+        const complete = () => {
+            if (finished) {
+                return;
+            }
+
+            finished = true;
+
+            connection.removeEventListener(
+                "icegatheringstatechange",
+                stateChanged
+            );
+
+            resolve();
+        };
+
+        const stateChanged = () => {
+            if (
+                connection.iceGatheringState ===
+                "complete"
+            ) {
+                complete();
+            }
+        };
+
+        connection.addEventListener(
+            "icegatheringstatechange",
+            stateChanged
+        );
+
+        setTimeout(complete, timeoutMilliseconds);
+    });
+}
+
+
+// ============================================================
+// Configuration
+// ============================================================
+
+async function loadConfiguration() {
+    const response = await fetch("/config", {
+        method: "GET",
+        headers: {
+            Accept: "application/json"
+        },
+        cache: "no-store"
+    });
+
+    if (!response.ok) {
+        throw new Error(
+            `Unable to load configuration: HTTP ${response.status}`
+        );
+    }
+
+    const config = await response.json();
+
+    if (!config.signalingUrl) {
+        throw new Error(
+            "signalingUrl is missing from /config."
+        );
+    }
+
+    return config;
+}
+
+
+// ============================================================
+// Call timer
+// ============================================================
+
+function startTimer() {
+    stopTimer();
+
+    callStartedAt = Date.now();
+
+    updateTimer();
+
+    timerInterval = window.setInterval(
+        updateTimer,
+        1000
+    );
+}
+
+function updateTimer() {
+    if (!callStartedAt || !elements.timer) {
+        return;
+    }
+
+    const elapsedSeconds = Math.floor(
+        (Date.now() - callStartedAt) / 1000
+    );
+
+    const minutes = Math.floor(elapsedSeconds / 60);
+    const seconds = elapsedSeconds % 60;
+
+    elements.timer.textContent =
+        `${String(minutes).padStart(2, "0")}:` +
+        `${String(seconds).padStart(2, "0")}`;
+}
+
+function stopTimer() {
+    if (timerInterval !== null) {
+        window.clearInterval(timerInterval);
+        timerInterval = null;
+    }
+
+    callStartedAt = null;
+
+    if (elements.timer) {
+        elements.timer.textContent = "00:00";
+    }
+}
+
+
+// ============================================================
+// Transcript UI
+// ============================================================
+
+function scrollTranscriptToBottom() {
+    if (!elements.transcriptContainer) {
+        return;
+    }
+
+    elements.transcriptContainer.scrollTop =
+        elements.transcriptContainer.scrollHeight;
+}
+
+function createTranscriptBubble(role, text) {
+    if (!elements.transcriptContainer || !text) {
+        return null;
+    }
+
+    const bubble = document.createElement("div");
+
+    bubble.className =
+        role === "user"
+            ? "transcript-message user-message"
+            : "transcript-message agent-message";
+
+    bubble.dataset.role = role;
+
+    const label = document.createElement("div");
+    label.className = "transcript-speaker";
+    label.textContent =
+        role === "user" ? "You" : "Assistant";
+
+    const body = document.createElement("div");
+    body.className = "transcript-text";
+    body.textContent = text;
+
+    bubble.appendChild(label);
+    bubble.appendChild(body);
+
+    elements.transcriptContainer.appendChild(bubble);
+
+    scrollTranscriptToBottom();
+
+    return bubble;
+}
+
+function updateLiveTranscript(role, text) {
+    if (!text) {
+        return;
+    }
+
+    const directElement =
+        role === "user"
+            ? elements.userTranscript
+            : elements.assistantTranscript;
+
+    if (directElement) {
+        directElement.textContent = text;
+        return;
+    }
+
+    if (!elements.transcriptContainer) {
+        return;
+    }
+
+    const selector =
+        role === "user"
+            ? '[data-live-role="user"]'
+            : '[data-live-role="assistant"]';
+
+    let bubble =
+        elements.transcriptContainer.querySelector(selector);
+
+    if (!bubble) {
+        bubble = createTranscriptBubble(role, text);
+
+        if (bubble) {
+            bubble.dataset.liveRole = role;
+        }
+    } else {
+        const textElement =
+            bubble.querySelector(".transcript-text");
+
+        if (textElement) {
+            textElement.textContent = text;
+        }
+    }
+
+    scrollTranscriptToBottom();
+}
+
+function finalizeTranscript(role, text) {
+    if (!text) {
+        return;
+    }
+
+    const directElement =
+        role === "user"
+            ? elements.userTranscript
+            : elements.assistantTranscript;
+
+    if (directElement) {
+        directElement.textContent = text;
+    }
+
+    if (elements.transcriptContainer) {
+        const selector =
+            role === "user"
+                ? '[data-live-role="user"]'
+                : '[data-live-role="assistant"]';
+
+        const liveBubble =
+            elements.transcriptContainer.querySelector(
+                selector
+            );
+
+        if (liveBubble) {
+            const textElement =
+                liveBubble.querySelector(
+                    ".transcript-text"
+                );
+
+            if (textElement) {
+                textElement.textContent = text;
+            }
+
+            delete liveBubble.dataset.liveRole;
+        } else if (!directElement) {
+            createTranscriptBubble(role, text);
+        }
+    }
+
+    scrollTranscriptToBottom();
+}
+
+function clearTranscripts() {
+    currentUserTranscript = "";
+    currentAssistantTranscript = "";
+
+    if (elements.userTranscript) {
+        elements.userTranscript.textContent = "";
+    }
+
+    if (elements.assistantTranscript) {
+        elements.assistantTranscript.textContent = "";
+    }
+
+    if (elements.transcriptContainer) {
+        const messages =
+            elements.transcriptContainer.querySelectorAll(
+                ".transcript-message"
+            );
+
+        messages.forEach((message) => {
+            message.remove();
+        });
+    }
+}
+
+
+// ============================================================
+// WebRTC media
+// ============================================================
+
+async function createPeerConnection() {
+    remoteStream = new MediaStream();
+
+    peerConnection = new RTCPeerConnection({
+        bundlePolicy: "max-bundle"
+    });
+
+    peerConnection.onconnectionstatechange = () => {
+        if (!peerConnection) {
+            return;
+        }
+
+        const state = peerConnection.connectionState;
+
+        log(`WebRTC connection state: ${state}`);
+
+        if (state === "connected") {
+            isCallActive = true;
+            setButtonState(true);
+            setStatus("Connected — you can speak", "connected");
+
+            if (!timerInterval) {
+                startTimer();
+            }
+        }
+
+        if (
+            state === "failed" ||
+            state === "closed"
+        ) {
+            if (!isEndingCall) {
+                handleConnectionFailure(
+                    `WebRTC connection ${state}.`
+                );
+            }
+        }
+
+        if (state === "disconnected") {
+            setStatus(
+                "Connection interrupted…",
+                "connecting"
+            );
+        }
+    };
+
+    peerConnection.oniceconnectionstatechange = () => {
+        if (!peerConnection) {
+            return;
+        }
+
+        log(
+            `ICE connection state: ` +
+            peerConnection.iceConnectionState
+        );
+    };
+
+    peerConnection.onicecandidateerror = (event) => {
+        log("ICE candidate error", event);
+    };
+
+    peerConnection.ontrack = async (event) => {
+        log(
+            `Remote ${event.track.kind} track received`
+        );
+
+        remoteStream.addTrack(event.track);
+
+        if (elements.video) {
+            if (
+                elements.video.srcObject !==
+                remoteStream
+            ) {
+                elements.video.srcObject =
+                    remoteStream;
+            }
+
+            elements.video.autoplay = true;
+            elements.video.playsInline = true;
+
+            try {
+                await elements.video.play();
+            } catch (error) {
+                log(
+                    "Browser delayed media autoplay",
+                    error
+                );
+            }
+        }
+
+        if (elements.avatarPlaceholder) {
+            elements.avatarPlaceholder.hidden = true;
+        }
+    };
+
+    localStream =
+        await navigator.mediaDevices.getUserMedia({
+            audio: {
+                channelCount: 1,
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true
+            },
+            video: false
+        });
+
+    const microphoneTrack =
+        localStream.getAudioTracks()[0];
+
+    if (!microphoneTrack) {
+        throw new Error(
+            "No microphone audio track was found."
+        );
+    }
+
+    peerConnection.addTrack(
+        microphoneTrack,
+        localStream
+    );
+
+    /*
+     * The avatar video is returned as a remote WebRTC
+     * video track, so we explicitly request a video
+     * receiver.
+     */
+    peerConnection.addTransceiver("video", {
+        direction: "recvonly"
+    });
+
+    createDataChannel();
+
+    log("Microphone and WebRTC peer created");
+}
+
+
+// ============================================================
+// Data channel
+// ============================================================
+
+function createDataChannel() {
+    if (!peerConnection) {
+        throw new Error(
+            "Peer connection has not been created."
+        );
+    }
+
+    dataChannel =
+        peerConnection.createDataChannel(
+            "voice-live-events"
+        );
+
+    dataChannel.onopen = () => {
+        log("Voice Live data channel opened");
+    };
+
+    dataChannel.onclose = () => {
+        log("Voice Live data channel closed");
+    };
+
+    dataChannel.onerror = (event) => {
+        log("Data channel error", event);
+    };
+
+    dataChannel.onmessage = (event) => {
+        try {
+            const message = JSON.parse(event.data);
+            handleVoiceLiveEvent(message, "data-channel");
+        } catch (error) {
+            log(
+                "Unable to parse data-channel event",
+                error
+            );
+        }
+    };
+}
+
+
+// ============================================================
+// Signaling WebSocket
+// ============================================================
+
+function openSignalingSocket(url) {
+    return new Promise((resolve, reject) => {
+        const socketUrl = getWebSocketUrl(url);
+
+        log(`Opening signaling socket: ${socketUrl}`);
+
+        signalingSocket = new WebSocket(socketUrl);
+
+        let completed = false;
+
+        const timeoutId = window.setTimeout(() => {
+            if (completed) {
+                return;
+            }
+
+            completed = true;
+
+            reject(
+                new Error(
+                    "Timed out while connecting to the backend."
+                )
+            );
+        }, 15000);
+
+        signalingSocket.onopen = () => {
+            log("Backend signaling socket opened");
+        };
+
+        signalingSocket.onmessage = (event) => {
+            let message;
+
+            try {
+                message = JSON.parse(event.data);
+            } catch (error) {
+                log(
+                    "Received non-JSON signaling message",
+                    event.data
+                );
+                return;
+            }
+
+            handleVoiceLiveEvent(
+                message,
+                "signaling"
+            );
+
+            if (
+                !completed &&
+                message.type === "proxy.connected"
+            ) {
+                completed = true;
+                window.clearTimeout(timeoutId);
+                resolve();
+            }
+        };
+
+        signalingSocket.onerror = () => {
+            if (!completed) {
+                completed = true;
+                window.clearTimeout(timeoutId);
+
+                reject(
+                    new Error(
+                        "Backend signaling connection failed."
+                    )
+                );
+            }
+        };
+
+        signalingSocket.onclose = (event) => {
+            log(
+                `Signaling socket closed: ${event.code}`
+            );
+
+            if (!completed) {
+                completed = true;
+                window.clearTimeout(timeoutId);
+
+                reject(
+                    new Error(
+                        "Signaling socket closed before connecting."
+                    )
+                );
+            }
+        };
+    });
+}
+
+function waitForSdpAnswer(timeoutMilliseconds = 30000) {
+    return new Promise((resolve, reject) => {
+        const timeoutId = window.setTimeout(() => {
+            cleanup();
+
+            reject(
+                new Error(
+                    "Timed out waiting for Azure SDP answer."
+                )
+            );
+        }, timeoutMilliseconds);
+
+        const messageHandler = (event) => {
+            let message;
+
+            try {
+                message = JSON.parse(event.data);
+            } catch {
+                return;
+            }
+
+            if (
+                message.type ===
+                "rtc.call.sdp.created"
+            ) {
+                cleanup();
+                resolve(message);
+                return;
+            }
+
+            if (
+                message.type === "rtc.call.error" ||
+                message.type === "proxy.error" ||
+                message.type === "error"
+            ) {
+                cleanup();
+
+                const errorMessage =
+                    message.error?.message ||
+                    message.message ||
+                    "Voice Live signaling failed.";
+
+                reject(new Error(errorMessage));
+            }
+        };
+
+        const closeHandler = () => {
+            cleanup();
+
+            reject(
+                new Error(
+                    "Signaling socket closed before SDP negotiation completed."
+                )
+            );
+        };
+
+        function cleanup() {
+            window.clearTimeout(timeoutId);
+
+            if (signalingSocket) {
+                signalingSocket.removeEventListener(
+                    "message",
+                    messageHandler
+                );
+
+                signalingSocket.removeEventListener(
+                    "close",
+                    closeHandler
+                );
+            }
+        }
+
+        signalingSocket.addEventListener(
+            "message",
+            messageHandler
+        );
+
+        signalingSocket.addEventListener(
+            "close",
+            closeHandler
+        );
+    });
+}
+
+
+// ============================================================
+// Voice Live event processing
+// ============================================================
+
+function handleVoiceLiveEvent(message, source) {
+    if (!message || !message.type) {
+        return;
+    }
+
+    log(`${source}: ${message.type}`);
+
+    switch (message.type) {
+        case "proxy.connected":
+            setStatus(
+                "Secure connection established…",
+                "connecting"
+            );
+            break;
+
+
+
+
+
