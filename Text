@@ -2044,3 +2044,174 @@ index.html
     ></script>
 </body>
 </html>
+
+
+
+
+
+<fragment>
+
+    <!-- Unique correlation ID for this request -->
+    <set-variable
+        name="correlationId"
+        value="@(
+            context.Request.Headers.GetValueOrDefault(
+                "x-correlation-id",
+                context.RequestId.ToString()
+            )
+        )" />
+
+    <!-- Request time in UTC -->
+    <set-variable
+        name="requestTimestamp"
+        value="@(DateTime.UtcNow.ToString("o"))" />
+
+    <!-- Used later to calculate total latency -->
+    <set-variable
+        name="startTime"
+        value="@(DateTime.UtcNow.Ticks)" />
+
+    <!-- Session ID supplied by client, otherwise generate one -->
+    <set-variable
+        name="sessionId"
+        value="@{
+            var sessionId =
+                context.Request.Headers.GetValueOrDefault(
+                    "x-session-id",
+                    ""
+                );
+
+            return string.IsNullOrWhiteSpace(sessionId)
+                ? Guid.NewGuid().ToString()
+                : sessionId;
+        }" />
+
+    <!-- Extract user ID from JWT -->
+    <set-variable
+        name="userId"
+        value="@{
+            var authorization =
+                context.Request.Headers.GetValueOrDefault(
+                    "Authorization",
+                    ""
+                );
+
+            var jwt = authorization.Replace("Bearer ", "");
+
+            if (string.IsNullOrWhiteSpace(jwt))
+            {
+                return "anonymous";
+            }
+
+            try
+            {
+                var payload = jwt.AsJwt();
+
+                return payload.Claims.GetValueOrDefault(
+                    "oid",
+                    "unknown"
+                );
+            }
+            catch
+            {
+                return "invalid-token";
+            }
+        }" />
+
+    <!-- Business attribution headers -->
+    <set-variable
+        name="teamId"
+        value="@(
+            context.Request.Headers.GetValueOrDefault(
+                "x-team-id",
+                "unassigned"
+            )
+        )" />
+
+    <set-variable
+        name="businessUnit"
+        value="@(
+            context.Request.Headers.GetValueOrDefault(
+                "x-business-unit",
+                "unassigned"
+            )
+        )" />
+
+    <set-variable
+        name="costCenter"
+        value="@(
+            context.Request.Headers.GetValueOrDefault(
+                "x-cost-center",
+                "unassigned"
+            )
+        )" />
+
+    <set-variable
+        name="agentId"
+        value="@(
+            context.Request.Headers.GetValueOrDefault(
+                "x-agent-id",
+                "direct-call"
+            )
+        )" />
+
+    <!-- Model-routing information -->
+    <set-variable
+        name="modelProvider"
+        value="@(
+            context.Variables.GetValueOrDefault<string>(
+                "modelProvider",
+                "unknown"
+            )
+        )" />
+
+    <set-variable
+        name="modelName"
+        value="@(
+            context.Variables.GetValueOrDefault<string>(
+                "modelName",
+                "unknown"
+            )
+        )" />
+
+    <set-variable
+        name="modelDeployment"
+        value="@(
+            context.Variables.GetValueOrDefault<string>(
+                "modelDeployment",
+                "unknown"
+            )
+        )" />
+
+    <set-variable
+        name="regionRouted"
+        value="@(context.Deployment.Region)" />
+
+    <!-- Preserve request body so the backend still receives it -->
+    <set-variable
+        name="promptBody"
+        value="@{
+            var body =
+                context.Request.Body?.As<string>(
+                    preserveContent: true
+                ) ?? "";
+
+            return body.Length > 8000
+                ? body.Substring(0, 8000) + "...[TRUNCATED]"
+                : body;
+        }" />
+
+    <!-- Forward identifiers to backend -->
+    <set-header
+        name="x-correlation-id"
+        exists-action="override">
+        <value>@((string)context.Variables["correlationId"])</value>
+    </set-header>
+
+    <set-header
+        name="x-session-id"
+        exists-action="override">
+        <value>@((string)context.Variables["sessionId"])</value>
+    </set-header>
+
+</fragment>
