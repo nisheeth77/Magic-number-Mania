@@ -2215,3 +2215,187 @@ index.html
     </set-header>
 
 </fragment>
+
+
+
+
+
+
+
+
+
+<fragment>
+
+    <!-- Capture response without consuming it -->
+    <set-variable name="responseBody" value="@{
+        var body = context.Response.Body?.As<string>(preserveContent: true) ?? "";
+
+        return body.Length > 8000
+            ? body.Substring(0, 8000) + "...[TRUNCATED]"
+            : body;
+    }" />
+
+    <!-- Calculate end-to-end latency -->
+    <set-variable name="latencyMs" value="@{
+        var start = context.Variables.GetValueOrDefault<long>(
+            "startTime",
+            DateTime.UtcNow.Ticks
+        );
+
+        return (DateTime.UtcNow.Ticks - start)
+            / TimeSpan.TicksPerMillisecond;
+    }" />
+
+    <!-- Extract token usage from the model response -->
+    <set-variable name="tokenUsage" value="@{
+        try
+        {
+            var responseBody =
+                context.Variables.GetValueOrDefault<string>(
+                    "responseBody",
+                    ""
+                );
+
+            if (string.IsNullOrWhiteSpace(responseBody))
+            {
+                return new JObject(
+                    new JProperty("prompt", 0),
+                    new JProperty("completion", 0),
+                    new JProperty("total", 0)
+                );
+            }
+
+            var json = responseBody.AsJObject();
+            var usage = json["usage"];
+
+            if (usage == null)
+            {
+                return new JObject(
+                    new JProperty("prompt", 0),
+                    new JProperty("completion", 0),
+                    new JProperty("total", 0)
+                );
+            }
+
+            var promptTokens =
+                (int?)usage["prompt_tokens"]
+                ?? (int?)usage["input_tokens"]
+                ?? 0;
+
+            var completionTokens =
+                (int?)usage["completion_tokens"]
+                ?? (int?)usage["output_tokens"]
+                ?? 0;
+
+            var totalTokens =
+                (int?)usage["total_tokens"]
+                ?? promptTokens + completionTokens;
+
+            return new JObject(
+                new JProperty("prompt", promptTokens),
+                new JProperty("completion", completionTokens),
+                new JProperty("total", totalTokens)
+            );
+        }
+        catch
+        {
+            return new JObject(
+                new JProperty("prompt", 0),
+                new JProperty("completion", 0),
+                new JProperty("total", 0)
+            );
+        }
+    }" />
+
+    <!-- Basic PII masking for the prompt -->
+    <set-variable name="promptMasked" value="@{
+        var prompt =
+            context.Variables.GetValueOrDefault<string>(
+                "promptBody",
+                ""
+            );
+
+        prompt = System.Text.RegularExpressions.Regex.Replace(
+            prompt,
+            @"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b",
+            "[EMAIL]"
+        );
+
+        prompt = System.Text.RegularExpressions.Regex.Replace(
+            prompt,
+            @"\b\d{3}-\d{2}-\d{4}\b",
+            "[SSN]"
+        );
+
+        prompt = System.Text.RegularExpressions.Regex.Replace(
+            prompt,
+            @"\b(?:\d[ -]*?){13,16}\b",
+            "[CARD]"
+        );
+
+        prompt = System.Text.RegularExpressions.Regex.Replace(
+            prompt,
+            @"\+?\d[\d\s\-()]{8,14}\d",
+            "[PHONE]"
+        );
+
+        return prompt;
+    }" />
+
+    <!-- Temporary trace for testing -->
+    <trace source="AI-Gateway-Response" severity="information">
+        <message>Outbound response metadata captured</message>
+
+        <metadata
+            name="CorrelationId"
+            value="@(
+                context.Variables.GetValueOrDefault<string>(
+                    "correlationId",
+                    "missing"
+                )
+            )" />
+
+        <metadata
+            name="SessionId"
+            value="@(
+                context.Variables.GetValueOrDefault<string>(
+                    "sessionId",
+                    "missing"
+                )
+            )" />
+
+        <metadata
+            name="LatencyMs"
+            value="@(
+                context.Variables
+                    .GetValueOrDefault<long>("latencyMs", 0)
+                    .ToString()
+            )" />
+
+        <metadata
+            name="PromptTokens"
+            value="@(
+                ((int)((JObject)context.Variables["tokenUsage"])["prompt"])
+                    .ToString()
+            )" />
+
+        <metadata
+            name="CompletionTokens"
+            value="@(
+                ((int)((JObject)context.Variables["tokenUsage"])["completion"])
+                    .ToString()
+            )" />
+
+        <metadata
+            name="TotalTokens"
+            value="@(
+                ((int)((JObject)context.Variables["tokenUsage"])["total"])
+                    .ToString()
+            )" />
+
+        <metadata
+            name="HttpStatus"
+            value="@(context.Response.StatusCode.ToString())" />
+    </trace>
+
+</fragment>
