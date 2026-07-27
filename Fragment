@@ -1,0 +1,519 @@
+<fragment>
+
+    <!-- ========================================================= -->
+    <!-- Capture the backend response without consuming the body   -->
+    <!-- ========================================================= -->
+
+    <set-variable name="responseBody" value="@{
+        var body =
+            context.Response.Body?.As<string>(
+                preserveContent: true
+            ) ?? string.Empty;
+
+        return body.Length > 8000
+            ? body.Substring(0, 8000) + "...[TRUNCATED]"
+            : body;
+    }" />
+
+
+    <!-- ========================================================= -->
+    <!-- Calculate total request latency                           -->
+    <!-- ========================================================= -->
+
+    <set-variable name="latencyMs" value="@{
+        var startTime =
+            context.Variables.GetValueOrDefault<long>(
+                "startTime",
+                DateTime.UtcNow.Ticks
+            );
+
+        return (DateTime.UtcNow.Ticks - startTime)
+            / TimeSpan.TicksPerMillisecond;
+    }" />
+
+
+    <!-- ========================================================= -->
+    <!-- Extract prompt/input tokens                               -->
+    <!-- Supports Chat Completions and Responses API formats       -->
+    <!-- ========================================================= -->
+
+    <set-variable name="promptTokens" value="@{
+        try
+        {
+            var responseBody =
+                context.Variables.GetValueOrDefault<string>(
+                    "responseBody",
+                    string.Empty
+                );
+
+            if (string.IsNullOrWhiteSpace(responseBody))
+            {
+                return 0;
+            }
+
+            var responseJson = JObject.Parse(responseBody);
+            var usage = responseJson["usage"];
+
+            if (usage == null)
+            {
+                return 0;
+            }
+
+            return
+                (int?)usage["prompt_tokens"]
+                ?? (int?)usage["input_tokens"]
+                ?? 0;
+        }
+        catch
+        {
+            return 0;
+        }
+    }" />
+
+
+    <!-- ========================================================= -->
+    <!-- Extract completion/output tokens                          -->
+    <!-- ========================================================= -->
+
+    <set-variable name="completionTokens" value="@{
+        try
+        {
+            var responseBody =
+                context.Variables.GetValueOrDefault<string>(
+                    "responseBody",
+                    string.Empty
+                );
+
+            if (string.IsNullOrWhiteSpace(responseBody))
+            {
+                return 0;
+            }
+
+            var responseJson = JObject.Parse(responseBody);
+            var usage = responseJson["usage"];
+
+            if (usage == null)
+            {
+                return 0;
+            }
+
+            return
+                (int?)usage["completion_tokens"]
+                ?? (int?)usage["output_tokens"]
+                ?? 0;
+        }
+        catch
+        {
+            return 0;
+        }
+    }" />
+
+
+    <!-- ========================================================= -->
+    <!-- Extract total tokens                                      -->
+    <!-- Falls back to prompt + completion when total is absent     -->
+    <!-- ========================================================= -->
+
+    <set-variable name="totalTokens" value="@{
+        try
+        {
+            var promptTokens =
+                context.Variables.GetValueOrDefault<int>(
+                    "promptTokens",
+                    0
+                );
+
+            var completionTokens =
+                context.Variables.GetValueOrDefault<int>(
+                    "completionTokens",
+                    0
+                );
+
+            var responseBody =
+                context.Variables.GetValueOrDefault<string>(
+                    "responseBody",
+                    string.Empty
+                );
+
+            if (string.IsNullOrWhiteSpace(responseBody))
+            {
+                return promptTokens + completionTokens;
+            }
+
+            var responseJson = JObject.Parse(responseBody);
+            var usage = responseJson["usage"];
+
+            if (usage == null)
+            {
+                return promptTokens + completionTokens;
+            }
+
+            return
+                (int?)usage["total_tokens"]
+                ?? promptTokens + completionTokens;
+        }
+        catch
+        {
+            return
+                context.Variables.GetValueOrDefault<int>(
+                    "promptTokens",
+                    0
+                )
+                +
+                context.Variables.GetValueOrDefault<int>(
+                    "completionTokens",
+                    0
+                );
+        }
+    }" />
+
+
+    <!-- ========================================================= -->
+    <!-- Mask basic PII patterns inside the prompt                 -->
+    <!-- ========================================================= -->
+
+    <set-variable name="promptMasked" value="@{
+        var prompt =
+            context.Variables.GetValueOrDefault<string>(
+                "promptBody",
+                string.Empty
+            );
+
+        /*
+         * Email address
+         */
+        prompt = System.Text.RegularExpressions.Regex.Replace(
+            prompt,
+            @&quot;\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b&quot;,
+            "[EMAIL]"
+        );
+
+        /*
+         * US-style SSN
+         */
+        prompt = System.Text.RegularExpressions.Regex.Replace(
+            prompt,
+            @&quot;\b\d{3}-\d{2}-\d{4}\b&quot;,
+            "[SSN]"
+        );
+
+        /*
+         * Possible payment-card number
+         */
+        prompt = System.Text.RegularExpressions.Regex.Replace(
+            prompt,
+            @&quot;\b(?:\d[ \-]*?){13,16}\b&quot;,
+            "[CARD]"
+        );
+
+        /*
+         * Possible phone number
+         */
+        prompt = System.Text.RegularExpressions.Regex.Replace(
+            prompt,
+            @&quot;\+?\d[\d\s\-()]{8,14}\d&quot;,
+            "[PHONE]"
+        );
+
+        return prompt;
+    }" />
+
+
+    <!-- ========================================================= -->
+    <!-- Determine whether basic PII masking changed the prompt     -->
+    <!-- ========================================================= -->
+
+    <set-variable name="piiDetected" value="@{
+        var originalPrompt =
+            context.Variables.GetValueOrDefault<string>(
+                "promptBody",
+                string.Empty
+            );
+
+        var maskedPrompt =
+            context.Variables.GetValueOrDefault<string>(
+                "promptMasked",
+                string.Empty
+            );
+
+        return !string.Equals(
+            originalPrompt,
+            maskedPrompt,
+            StringComparison.Ordinal
+        );
+    }" />
+
+
+    <!-- ========================================================= -->
+    <!-- Send the complete structured record to Event Hub          -->
+    <!-- ========================================================= -->
+
+    <log-to-eventhub
+        logger-id="YOUR-EVENT-HUB-LOGGER-ID">
+        @{
+            var payload = new JObject
+            {
+                /*
+                 * Request and conversation identifiers
+                 */
+                ["CorrelationId"] =
+                    context.Variables.GetValueOrDefault<string>(
+                        "correlationId",
+                        context.RequestId.ToString()
+                    ),
+
+                ["RequestTimestamp"] =
+                    context.Variables.GetValueOrDefault<string>(
+                        "requestTimestamp",
+                        DateTime.UtcNow.ToString("o")
+                    ),
+
+                ["SessionId"] =
+                    context.Variables.GetValueOrDefault<string>(
+                        "sessionId",
+                        "no-session"
+                    ),
+
+
+                /*
+                 * User and organisational attribution
+                 */
+                ["UserId"] =
+                    context.Variables.GetValueOrDefault<string>(
+                        "userId",
+                        "anonymous"
+                    ),
+
+                ["TeamId"] =
+                    context.Variables.GetValueOrDefault<string>(
+                        "teamId",
+                        "unassigned"
+                    ),
+
+                ["BusinessUnit"] =
+                    context.Variables.GetValueOrDefault<string>(
+                        "businessUnit",
+                        "unassigned"
+                    ),
+
+                ["CostCenter"] =
+                    context.Variables.GetValueOrDefault<string>(
+                        "costCenter",
+                        "unassigned"
+                    ),
+
+                ["AgentId"] =
+                    context.Variables.GetValueOrDefault<string>(
+                        "agentId",
+                        "direct-call"
+                    ),
+
+
+                /*
+                 * API information
+                 */
+                ["ApiName"] =
+                    context.Api != null
+                        ? context.Api.Name
+                        : "unknown-api",
+
+                ["OperationName"] =
+                    context.Operation != null
+                        ? context.Operation.Name
+                        : "unknown-operation",
+
+
+                /*
+                 * Model-routing information
+                 */
+                ["ModelProvider"] =
+                    context.Variables.GetValueOrDefault<string>(
+                        "modelProvider",
+                        "unknown"
+                    ),
+
+                ["ModelName"] =
+                    context.Variables.GetValueOrDefault<string>(
+                        "modelName",
+                        "unknown"
+                    ),
+
+                ["ModelDeployment"] =
+                    context.Variables.GetValueOrDefault<string>(
+                        "modelDeployment",
+                        "unknown"
+                    ),
+
+                ["RegionRouted"] =
+                    context.Variables.GetValueOrDefault<string>(
+                        "regionRouted",
+                        context.Deployment.Region
+                    ),
+
+
+                /*
+                 * Prompt and response
+                 */
+                ["PromptText"] =
+                    context.Variables.GetValueOrDefault<string>(
+                        "promptMasked",
+                        string.Empty
+                    ),
+
+                ["ResponseText"] =
+                    context.Variables.GetValueOrDefault<string>(
+                        "responseBody",
+                        string.Empty
+                    ),
+
+
+                /*
+                 * Token usage
+                 */
+                ["PromptTokens"] =
+                    context.Variables.GetValueOrDefault<int>(
+                        "promptTokens",
+                        0
+                    ),
+
+                ["CompletionTokens"] =
+                    context.Variables.GetValueOrDefault<int>(
+                        "completionTokens",
+                        0
+                    ),
+
+                ["TotalTokens"] =
+                    context.Variables.GetValueOrDefault<int>(
+                        "totalTokens",
+                        0
+                    ),
+
+
+                /*
+                 * Performance and status
+                 */
+                ["LatencyMs"] =
+                    context.Variables.GetValueOrDefault<long>(
+                        "latencyMs",
+                        0
+                    ),
+
+                ["HttpStatus"] =
+                    context.Response != null
+                        ? context.Response.StatusCode
+                        : 0,
+
+
+                /*
+                 * Governance flags
+                 */
+                ["ContentSafetyFlag"] =
+                    context.Variables.GetValueOrDefault<bool>(
+                        "contentSafetyTriggered",
+                        false
+                    ),
+
+                ["PIIDetected"] =
+                    context.Variables.GetValueOrDefault<bool>(
+                        "piiDetected",
+                        false
+                    ),
+
+
+                /*
+                 * APIM subscription and product
+                 */
+                ["SubscriptionId"] =
+                    context.Subscription != null
+                        ? context.Subscription.Id
+                        : "no-subscription",
+
+                ["ProductName"] =
+                    context.Product != null
+                        ? context.Product.Name
+                        : "no-product"
+            };
+
+            return payload.ToString(
+                Newtonsoft.Json.Formatting.None
+            );
+        }
+    </log-to-eventhub>
+
+
+    <!-- ========================================================= -->
+    <!-- Temporary verification trace                              -->
+    <!-- Remove after Event Hub logging is confirmed               -->
+    <!-- ========================================================= -->
+
+    <trace
+        source="AI-Gateway-EventHub-Logger"
+        severity="information">
+
+        <message>
+            AI Gateway event sent to Event Hub
+        </message>
+
+        <metadata
+            name="CorrelationId"
+            value="@(
+                context.Variables.GetValueOrDefault<string>(
+                    "correlationId",
+                    "missing"
+                )
+            )" />
+
+        <metadata
+            name="SessionId"
+            value="@(
+                context.Variables.GetValueOrDefault<string>(
+                    "sessionId",
+                    "missing"
+                )
+            )" />
+
+        <metadata
+            name="PromptTokens"
+            value="@(
+                context.Variables.GetValueOrDefault<int>(
+                    "promptTokens",
+                    0
+                ).ToString()
+            )" />
+
+        <metadata
+            name="CompletionTokens"
+            value="@(
+                context.Variables.GetValueOrDefault<int>(
+                    "completionTokens",
+                    0
+                ).ToString()
+            )" />
+
+        <metadata
+            name="TotalTokens"
+            value="@(
+                context.Variables.GetValueOrDefault<int>(
+                    "totalTokens",
+                    0
+                ).ToString()
+            )" />
+
+        <metadata
+            name="LatencyMs"
+            value="@(
+                context.Variables.GetValueOrDefault<long>(
+                    "latencyMs",
+                    0
+                ).ToString()
+            )" />
+
+        <metadata
+            name="HttpStatus"
+            value="@(
+                context.Response.StatusCode.ToString()
+            )" />
+
+    </trace>
+
+</fragment>
