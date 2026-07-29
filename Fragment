@@ -517,3 +517,231 @@
     </trace>
 
 </fragment>
+
+
+
+
+
+
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>DU Voice Support</title>
+
+    <link
+        rel="stylesheet"
+        href="{{ url_for('static', path='style.css') }}"
+    >
+</head>
+
+<body>
+    <main class="app-shell">
+
+        <header class="top-bar">
+            <div class="brand-section">
+                <div class="brand-logo">du</div>
+
+                <div>
+                    <h1>Voice Support</h1>
+                    <p>Talk with our virtual customer care assistant</p>
+                </div>
+            </div>
+
+            <div class="connection-status">
+                <span
+                    id="statusDot"
+                    class="status-dot disconnected"
+                ></span>
+
+                <span id="statusText">
+                    Ready to start
+                </span>
+            </div>
+        </header>
+
+
+        <section class="main-content">
+
+            <!-- Avatar panel -->
+            <div class="avatar-panel">
+
+                <div class="video-wrapper">
+
+                    <video
+                        id="avatarVideo"
+                        autoplay
+                        playsinline
+                    ></video>
+
+                    <div
+                        id="avatarPlaceholder"
+                        class="avatar-placeholder"
+                    >
+                        <div class="avatar-placeholder-icon">
+                            👩‍💼
+                        </div>
+
+                        <h2>Lisa</h2>
+
+                        <p>
+                            Your virtual customer care assistant
+                        </p>
+                    </div>
+
+                    <div
+                        id="listeningIndicator"
+                        class="activity-indicator"
+                        hidden
+                    >
+                        <span class="pulse-dot"></span>
+                        Listening
+                    </div>
+
+                    <div
+                        id="speakingIndicator"
+                        class="activity-indicator"
+                        hidden
+                    >
+                        <span class="wave-bars">
+                            <span></span>
+                            <span></span>
+                            <span></span>
+                            <span></span>
+                        </span>
+
+                        Speaking
+                    </div>
+
+                </div>
+
+
+                <div class="call-information">
+
+                    <div class="agent-information">
+                        <h2>Lisa</h2>
+                        <p>DU Customer Care Assistant</p>
+                    </div>
+
+                    <div
+                        id="callTimer"
+                        class="call-timer"
+                    >
+                        00:00
+                    </div>
+
+                </div>
+
+
+                <div class="call-controls">
+
+                    <button
+                        id="startCallBtn"
+                        class="control-button start-button"
+                        type="button"
+                    >
+                        <span class="button-icon">☎</span>
+
+                        <span class="button-label">
+                            Start Call
+                        </span>
+                    </button>
+
+
+                    <button
+                        id="muteBtn"
+                        class="control-button secondary-button"
+                        type="button"
+                        disabled
+                    >
+                        <span class="button-icon">🎙</span>
+
+                        <span class="button-label">
+                            Mute
+                        </span>
+                    </button>
+
+
+                    <button
+                        id="endCallBtn"
+                        class="control-button end-button"
+                        type="button"
+                        disabled
+                    >
+                        <span class="button-icon">☎</span>
+
+                        <span class="button-label">
+                            End Call
+                        </span>
+                    </button>
+
+                </div>
+
+            </div>
+
+
+            <!-- Transcript panel -->
+            <aside class="transcript-panel">
+
+                <div class="transcript-header">
+                    <div>
+                        <h2>Live Conversation</h2>
+
+                        <p>
+                            Your conversation transcript appears here
+                        </p>
+                    </div>
+
+                    <span class="live-badge">
+                        LIVE
+                    </span>
+                </div>
+
+
+                <div
+                    id="transcriptContainer"
+                    class="transcript-container"
+                >
+                    <div class="transcript-welcome">
+                        <div class="welcome-icon">
+                            💬
+                        </div>
+
+                        <h3>Start a conversation</h3>
+
+                        <p>
+                            Select Start Call and speak naturally.
+                            Lisa will respond with voice and video.
+                        </p>
+                    </div>
+                </div>
+
+
+                <div class="privacy-notice">
+                    <span class="privacy-icon">🔒</span>
+
+                    <p>
+                        Your microphone is used only while the call
+                        is active.
+                    </p>
+                </div>
+
+            </aside>
+
+        </section>
+
+    </main>
+
+
+    <script
+        src="{{ url_for('static', path='app.js') }}"
+    ></script>
+</body>
+</html>
