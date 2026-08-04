@@ -1354,3 +1354,510 @@ button {
     ></script>
 </body>
 </html>
+
+
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import json
+import logging
+import os
+from contextlib import asynccontextmanager, suppress
+from typing import Any
+
+import uvicorn
+from azure.ai.voicelive.aio import connect
+from azure.identity.aio import AzureCliCredential
+from dotenv import load_dotenv
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+
+
+# ============================================================
+# Environment configuration
+# ============================================================
+
+load_dotenv()
+
+PROJECT_ENDPOINT = os.getenv("PROJECT_ENDPOINT", "").strip()
+PROJECT_NAME = os.getenv("PROJECT_NAME", "").strip()
+
+AGENT_NAME = os.getenv("AGENT_NAME", "").strip()
+AGENT_VERSION = os.getenv("AGENT_VERSION", "").strip()
+CONVERSATION_ID = os.getenv("CONVERSATION_ID", "").strip()
+
+VOICE_LIVE_ENDPOINT = os.getenv(
+    "VOICELIVE_ENDPOINT",
+    "",
+).strip().rstrip("/")
+
+VOICE_LIVE_API_VERSION = os.getenv(
+    "VOICELIVE_API_VERSION",
+    "2026-04-10",
+).strip()
+
+HOST = os.getenv("HOST", "127.0.0.1")
+PORT = int(os.getenv("PORT", "8000"))
+
+
+# ============================================================
+# Logging
+# ============================================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
+
+logger = logging.getLogger("voice-avatar")
+
+
+# ============================================================
+# Validation
+# ============================================================
+
+def validate_environment() -> None:
+    required = {
+        "VOICELIVE_ENDPOINT": VOICE_LIVE_ENDPOINT,
+        "PROJECT_NAME": PROJECT_NAME,
+        "AGENT_NAME": AGENT_NAME,
+    }
+
+    missing = [
+        name
+        for name, value in required.items()
+        if not value
+    ]
+
+    if missing:
+        raise RuntimeError(
+            "Missing required environment variables: "
+            + ", ".join(missing)
+        )
+
+    if not VOICE_LIVE_ENDPOINT.startswith("https://"):
+        raise RuntimeError(
+            "VOICELIVE_ENDPOINT must be the HTTPS resource endpoint, "
+            "for example: "
+            "https://your-resource.services.ai.azure.com"
+        )
+
+
+# ============================================================
+# FastAPI lifecycle
+# ============================================================
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    validate_environment()
+
+    credential = AzureCliCredential()
+    app.state.azure_credential = credential
+
+    logger.info("Voice Avatar backend started")
+    logger.info("Voice Live endpoint: %s", VOICE_LIVE_ENDPOINT)
+    logger.info("Project: %s", PROJECT_NAME)
+    logger.info("Agent: %s", AGENT_NAME)
+    logger.info(
+        "Agent version: %s",
+        AGENT_VERSION or "latest",
+    )
+    logger.info(
+        "Conversation ID: %s",
+        CONVERSATION_ID or "new conversation",
+    )
+    logger.info(
+        "API version: %s",
+        VOICE_LIVE_API_VERSION,
+    )
+
+    try:
+        yield
+    finally:
+        await credential.close()
+        logger.info("Voice Avatar backend stopped")
+
+
+app = FastAPI(
+    title="DU Voice Avatar",
+    version="2.0.0",
+    lifespan=lifespan,
+)
+
+app.mount(
+    "/static",
+    StaticFiles(directory="static"),
+    name="static",
+)
+
+templates = Jinja2Templates(directory="templates")
+
+
+# ============================================================
+# HTTP routes
+# ============================================================
+
+@app.get("/", response_class=HTMLResponse)
+async def home(request: Request):
+    return templates.TemplateResponse(
+        request=request,
+        name="index.html",
+        context={
+            "request": request,
+        },
+    )
+
+
+@app.get("/health")
+async def health():
+    return {
+        "status": "healthy",
+        "architecture": "voice-live-sdk-websocket",
+        "project": PROJECT_NAME,
+        "agent": AGENT_NAME,
+        "agent_version": AGENT_VERSION or "latest",
+        "api_version": VOICE_LIVE_API_VERSION,
+    }
+
+
+@app.get("/config")
+async def frontend_config():
+    """
+    Only non-secret browser configuration is returned.
+    Azure credentials and access tokens remain in Python.
+    """
+
+    return {
+        "voiceWebSocketUrl": "/ws/voice",
+        "avatar": {
+            "character": "lisa",
+            "style": "casual-sitting",
+        },
+    }
+
+
+# ============================================================
+# Utility functions
+# ============================================================
+
+async def send_browser_event(
+    browser_ws: WebSocket,
+    event_type: str,
+    **values: Any,
+) -> None:
+    await browser_ws.send_json(
+        {
+            "type": event_type,
+            **values,
+        }
+    )
+
+
+def serialize_sdk_event(event: Any) -> dict[str, Any]:
+    """
+    Convert a typed Voice Live SDK server event to a plain dictionary.
+    """
+
+    if isinstance(event, dict):
+        return event
+
+    if hasattr(event, "as_dict"):
+        value = event.as_dict()
+
+        if isinstance(value, dict):
+            return value
+
+    if hasattr(event, "model_dump"):
+        value = event.model_dump(
+            mode="json",
+            exclude_none=True,
+        )
+
+        if isinstance(value, dict):
+            return value
+
+    if hasattr(event, "__dict__"):
+        return {
+            key: value
+            for key, value in vars(event).items()
+            if not key.startswith("_")
+        }
+
+    return {
+        "type": "unknown",
+        "value": str(event),
+    }
+
+
+# ============================================================
+# Browser -> Voice Live
+# ============================================================
+
+async def browser_to_voice_live(
+    browser_ws: WebSocket,
+    voice_connection: Any,
+) -> None:
+    """
+    Forward browser events and microphone audio to Voice Live.
+
+    Text messages:
+        JSON Voice Live client events.
+
+    Binary messages:
+        Raw PCM16 microphone audio. The backend converts the
+        audio to Base64 and appends it to the Voice Live input buffer.
+    """
+
+    while True:
+        browser_message = await browser_ws.receive()
+
+        websocket_message_type = browser_message.get("type")
+
+        if websocket_message_type == "websocket.disconnect":
+            raise WebSocketDisconnect()
+
+        text_data = browser_message.get("text")
+        binary_data = browser_message.get("bytes")
+
+        if text_data is not None:
+            try:
+                event = json.loads(text_data)
+            except json.JSONDecodeError:
+                await send_browser_event(
+                    browser_ws,
+                    "application.error",
+                    message="The browser sent invalid JSON.",
+                )
+                continue
+
+            event_type = event.get("type", "unknown")
+
+            # These are application-only messages and must not
+            # be forwarded to Azure.
+            if event_type == "application.ping":
+                await send_browser_event(
+                    browser_ws,
+                    "application.pong",
+                )
+                continue
+
+            if event_type == "application.disconnect":
+                return
+
+            logger.debug(
+                "Browser -> Voice Live: %s",
+                event_type,
+            )
+
+            # The SDK accepts dictionaries and serializes them
+            # as Voice Live client events.
+            await voice_connection.send(event)
+
+        elif binary_data is not None:
+            if not binary_data:
+                continue
+
+            audio_base64 = base64.b64encode(
+                binary_data
+            ).decode("ascii")
+
+            await voice_connection.input_audio_buffer.append(
+                audio=audio_base64
+            )
+
+
+# ============================================================
+# Voice Live -> Browser
+# ============================================================
+
+async def voice_live_to_browser(
+    voice_connection: Any,
+    browser_ws: WebSocket,
+) -> None:
+    """
+    Receive typed Voice Live server events and send them to app.js.
+
+    This includes:
+    - session events
+    - user transcription
+    - assistant transcription
+    - assistant audio deltas
+    - speech-start/speech-stop events
+    - avatar negotiation events
+    - errors and warnings
+    """
+
+    while True:
+        sdk_event = await voice_connection.recv()
+
+        if sdk_event is None:
+            logger.info(
+                "Voice Live returned no further events"
+            )
+            return
+
+        event = serialize_sdk_event(sdk_event)
+        event_type = event.get("type", "unknown")
+
+        logger.debug(
+            "Voice Live -> Browser: %s",
+            event_type,
+        )
+
+        await browser_ws.send_text(
+            json.dumps(
+                event,
+                default=str,
+            )
+        )
+
+
+# ============================================================
+# Main Voice Live WebSocket
+# ============================================================
+
+@app.websocket("/ws/voice")
+async def voice_websocket(
+    browser_ws: WebSocket,
+):
+    await browser_ws.accept()
+
+    logger.info("Browser connected to /ws/voice")
+
+    await send_browser_event(
+        browser_ws,
+        "application.connecting",
+        message="Connecting to Azure Voice Live...",
+    )
+
+    credential: AzureCliCredential = (
+        browser_ws.app.state.azure_credential
+    )
+
+    connect_arguments: dict[str, Any] = {
+        "endpoint": VOICE_LIVE_ENDPOINT,
+        "credential": credential,
+        "api_version": VOICE_LIVE_API_VERSION,
+        "project_name": PROJECT_NAME,
+        "agent_name": AGENT_NAME,
+    }
+
+    if AGENT_VERSION:
+        connect_arguments["agent_version"] = AGENT_VERSION
+
+    if CONVERSATION_ID:
+        connect_arguments["conversation_id"] = (
+            CONVERSATION_ID
+        )
+
+    try:
+        # The SDK constructs the correct:
+        # /voice-live/realtime endpoint,
+        # authentication headers,
+        # agent-name/project-name/version parameters.
+        async with connect(
+            **connect_arguments
+        ) as voice_connection:
+
+            logger.info(
+                "Connected to Voice Live agent %s",
+                AGENT_NAME,
+            )
+
+            await send_browser_event(
+                browser_ws,
+                "application.connected",
+                message="Connected to Azure Voice Live.",
+                agent={
+                    "name": AGENT_NAME,
+                    "version": (
+                        AGENT_VERSION or "latest"
+                    ),
+                    "project": PROJECT_NAME,
+                },
+            )
+
+            browser_task = asyncio.create_task(
+                browser_to_voice_live(
+                    browser_ws,
+                    voice_connection,
+                ),
+                name="browser-to-voice-live",
+            )
+
+            azure_task = asyncio.create_task(
+                voice_live_to_browser(
+                    voice_connection,
+                    browser_ws,
+                ),
+                name="voice-live-to-browser",
+            )
+
+            done, pending = await asyncio.wait(
+                {
+                    browser_task,
+                    azure_task,
+                },
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            for task in pending:
+                task.cancel()
+
+            if pending:
+                await asyncio.gather(
+                    *pending,
+                    return_exceptions=True,
+                )
+
+            for task in done:
+                if task.cancelled():
+                    continue
+
+                exception = task.exception()
+
+                if exception is not None:
+                    raise exception
+
+    except WebSocketDisconnect:
+        logger.info("Browser disconnected")
+
+    except asyncio.CancelledError:
+        logger.info("Voice session cancelled")
+        raise
+
+    except Exception as exc:
+        logger.exception(
+            "Voice Live session failed"
+        )
+
+        with suppress(Exception):
+            await send_browser_event(
+                browser_ws,
+                "application.error",
+                message=str(exc),
+            )
+
+    finally:
+        with suppress(Exception):
+            await browser_ws.close()
+
+        logger.info("Voice Live browser session closed")
+
+
+# ============================================================
+# Local startup
+# ============================================================
+
+if __name__ == "__main__":
+    uvicorn.run(
+        "app:app",
+        host=HOST,
+        port=PORT,
+        reload=True,
+        log_level="info",
+    )
