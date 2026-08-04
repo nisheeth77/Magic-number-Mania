@@ -867,4 +867,526 @@ async function startMicrophoneCapture() {
         }
 
         const inputSamples =
-            event.inp
+            event.inputBuffer.getChannelData(0);
+
+        const samples24Khz = downsampleTo24Khz(
+            inputSamples,
+            state.audioContext.sampleRate
+        );
+
+        const pcm16Buffer =
+            float32ToPcm16(samples24Khz);
+
+        state.voiceSocket.send(pcm16Buffer);
+    };
+
+    state.microphoneSource.connect(
+        state.audioProcessor
+    );
+
+    /*
+     * ScriptProcessor needs an output connection to run.
+     * The processor produces silence, so it won't echo
+     * microphone audio.
+     */
+    state.audioProcessor.connect(
+        state.audioContext.destination
+    );
+
+    log(
+        `Microphone started at ` +
+        `${state.audioContext.sampleRate} Hz`
+    );
+}
+
+
+function stopMicrophoneCapture() {
+    if (state.audioProcessor) {
+        state.audioProcessor.onaudioprocess = null;
+
+        try {
+            state.audioProcessor.disconnect();
+        } catch {
+            // Ignore cleanup errors.
+        }
+
+        state.audioProcessor = null;
+    }
+
+    if (state.microphoneSource) {
+        try {
+            state.microphoneSource.disconnect();
+        } catch {
+            // Ignore cleanup errors.
+        }
+
+        state.microphoneSource = null;
+    }
+
+    if (state.microphoneStream) {
+        state.microphoneStream
+            .getTracks()
+            .forEach((track) => track.stop());
+
+        state.microphoneStream = null;
+    }
+
+    if (state.audioContext) {
+        state.audioContext.close().catch(() => { });
+        state.audioContext = null;
+    }
+}
+
+
+/* =========================================================
+   Voice Live events
+   ========================================================= */
+
+async function handleVoiceLiveEvent(message) {
+    if (!message?.type) {
+        return;
+    }
+
+    switch (message.type) {
+        case "application.connecting":
+            setStatus(
+                message.message ||
+                "Connecting to Azure Voice Live…",
+                "connecting"
+            );
+            break;
+
+        case "application.connected":
+            setStatus(
+                "Connected to Voice Live",
+                "connecting"
+            );
+            break;
+
+        case "application.error":
+            throw new Error(
+                message.message ||
+                "The backend reported an error."
+            );
+
+        case "session.created":
+            log("Voice Live session created", message.session);
+
+            /*
+             * Keep the Foundry agent's stored voice and
+             * behaviour configuration. Only confirm the
+             * browser microphone audio format.
+             */
+            sendJsonEvent({
+                type: "session.update",
+                session: {
+                    input_audio_format: "pcm16",
+                    input_audio_sampling_rate: 24000
+                }
+            });
+
+            await createAvatarPeerConnection();
+            break;
+
+        case "session.updated":
+            log("Voice Live session updated", message.session);
+            break;
+
+        case "session.avatar.connecting":
+            setStatus(
+                "Connecting Lisa’s avatar…",
+                "connecting"
+            );
+
+            await applyAvatarServerSdp(
+                message.server_sdp
+            );
+            break;
+
+        case "session.avatar.switch_to_speaking":
+            setUserListening(false);
+            setAssistantSpeaking(true);
+            break;
+
+        case "session.avatar.switch_to_idle":
+            setAssistantSpeaking(false);
+
+            if (state.callActive) {
+                setStatus(
+                    "Connected — you can speak",
+                    "connected"
+                );
+            }
+            break;
+
+        case "input_audio_buffer.speech_started":
+            state.currentUserTranscript = "";
+
+            /*
+             * Clear queued avatar speech when the customer
+             * interrupts Lisa.
+             */
+            sendJsonEvent({
+                type: "output_audio_buffer.clear"
+            });
+
+            setAssistantSpeaking(false);
+            setUserListening(true);
+            break;
+
+        case "input_audio_buffer.speech_stopped":
+            setUserListening(false);
+
+            setStatus(
+                "Processing your request…",
+                "connecting"
+            );
+            break;
+
+        case "conversation.item.input_audio_transcription.delta":
+            state.currentUserTranscript +=
+                message.delta || "";
+
+            updateLiveTranscript(
+                "user",
+                state.currentUserTranscript
+            );
+            break;
+
+        case "conversation.item.input_audio_transcription.completed":
+            state.currentUserTranscript =
+                message.transcript ||
+                state.currentUserTranscript;
+
+            finalizeTranscript(
+                "user",
+                state.currentUserTranscript
+            );
+
+            state.currentUserTranscript = "";
+            break;
+
+        case "response.created":
+            state.currentAgentTranscript = "";
+
+            setStatus(
+                "Lisa is preparing a response…",
+                "connecting"
+            );
+            break;
+
+        case "response.audio_transcript.delta":
+            state.currentAgentTranscript +=
+                message.delta || "";
+
+            updateLiveTranscript(
+                "assistant",
+                state.currentAgentTranscript
+            );
+            break;
+
+        case "response.audio_transcript.done":
+            state.currentAgentTranscript =
+                message.transcript ||
+                state.currentAgentTranscript;
+
+            finalizeTranscript(
+                "assistant",
+                state.currentAgentTranscript
+            );
+
+            state.currentAgentTranscript = "";
+            break;
+
+        case "response.text.delta":
+            state.currentAgentTranscript +=
+                message.delta || "";
+
+            updateLiveTranscript(
+                "assistant",
+                state.currentAgentTranscript
+            );
+            break;
+
+        case "response.text.done":
+            state.currentAgentTranscript =
+                message.text ||
+                state.currentAgentTranscript;
+
+            finalizeTranscript(
+                "assistant",
+                state.currentAgentTranscript
+            );
+
+            state.currentAgentTranscript = "";
+            break;
+
+        case "response.done":
+        case "response.audio.done":
+            if (!elements.speakingIndicator?.hidden) {
+                break;
+            }
+
+            setStatus(
+                "Connected — you can speak",
+                "connected"
+            );
+            break;
+
+        case "warning":
+            console.warn(
+                "Voice Live warning:",
+                message.warning || message
+            );
+            break;
+
+        case "error":
+            throw new Error(
+                message.error?.message ||
+                "Azure Voice Live returned an error."
+            );
+
+        default:
+            log(`Unhandled event: ${message.type}`);
+            break;
+    }
+}
+
+
+/* =========================================================
+   Call controls
+   ========================================================= */
+
+async function startCall() {
+    if (state.callActive || state.callStarting) {
+        return;
+    }
+
+    state.callStarting = true;
+    state.callEnding = false;
+
+    updateButtons();
+
+    try {
+        setStatus("Preparing call…", "connecting");
+
+        if (!state.config) {
+            state.config = await loadConfiguration();
+        }
+
+        await connectVoiceWebSocket();
+
+        state.callActive = true;
+        state.callStarting = false;
+
+        startCallTimer();
+        updateButtons();
+
+        await startMicrophoneCapture();
+
+        setStatus(
+            "Connected — preparing Lisa…",
+            "connecting"
+        );
+    } catch (error) {
+        state.callStarting = false;
+
+        showError(
+            error instanceof Error
+                ? error.message
+                : String(error)
+        );
+
+        await endCall(false);
+    }
+}
+
+
+function toggleMute() {
+    if (!state.callActive) {
+        return;
+    }
+
+    state.microphoneMuted =
+        !state.microphoneMuted;
+
+    if (state.microphoneStream) {
+        state.microphoneStream
+            .getAudioTracks()
+            .forEach((track) => {
+                track.enabled =
+                    !state.microphoneMuted;
+            });
+    }
+
+    if (elements.muteButton) {
+        elements.muteButton.classList.toggle(
+            "muted",
+            state.microphoneMuted
+        );
+
+        const label =
+            elements.muteButton.querySelector(
+                ".button-label"
+            );
+
+        if (label) {
+            label.textContent =
+                state.microphoneMuted
+                    ? "Unmute"
+                    : "Mute";
+        }
+    }
+
+    setStatus(
+        state.microphoneMuted
+            ? "Microphone muted"
+            : "Connected — you can speak",
+        state.microphoneMuted
+            ? "disconnected"
+            : "connected"
+    );
+}
+
+
+async function endCall(updateUi = true) {
+    if (state.callEnding) {
+        return;
+    }
+
+    state.callEnding = true;
+    state.callActive = false;
+    state.callStarting = false;
+
+    stopCallTimer();
+    stopMicrophoneCapture();
+
+    setUserListening(false);
+    setAssistantSpeaking(false);
+
+    if (state.peerConnection) {
+        state.peerConnection.ontrack = null;
+
+        try {
+            state.peerConnection.close();
+        } catch {
+            // Ignore cleanup errors.
+        }
+
+        state.peerConnection = null;
+    }
+
+    if (state.remoteStream) {
+        state.remoteStream
+            .getTracks()
+            .forEach((track) => track.stop());
+
+        state.remoteStream = null;
+    }
+
+    if (elements.avatarVideo) {
+        elements.avatarVideo.pause();
+        elements.avatarVideo.srcObject = null;
+    }
+
+    if (elements.avatarPlaceholder) {
+        elements.avatarPlaceholder.hidden = false;
+    }
+
+    if (
+        state.voiceSocket &&
+        state.voiceSocket.readyState === WebSocket.OPEN
+    ) {
+        state.voiceSocket.send(
+            JSON.stringify({
+                type: "application.disconnect"
+            })
+        );
+
+        state.voiceSocket.close(
+            1000,
+            "Call ended by user"
+        );
+    }
+
+    state.voiceSocket = null;
+    state.microphoneMuted = false;
+
+    if (elements.muteButton) {
+        elements.muteButton.classList.remove("muted");
+
+        const label =
+            elements.muteButton.querySelector(
+                ".button-label"
+            );
+
+        if (label) {
+            label.textContent = "Mute";
+        }
+    }
+
+    if (updateUi) {
+        setStatus("Call ended", "disconnected");
+    }
+
+    state.callEnding = false;
+    updateButtons();
+
+    log("Call resources cleaned up");
+}
+
+
+/* =========================================================
+   Initialization
+   ========================================================= */
+
+async function initializeApplication() {
+    setStatus("Ready to start", "disconnected");
+    stopCallTimer();
+    updateButtons();
+
+    try {
+        state.config = await loadConfiguration();
+
+        log("Frontend configuration loaded", state.config);
+    } catch (error) {
+        showError(
+            error instanceof Error
+                ? error.message
+                : String(error)
+        );
+    }
+
+    elements.startButton?.addEventListener(
+        "click",
+        startCall
+    );
+
+    elements.muteButton?.addEventListener(
+        "click",
+        toggleMute
+    );
+
+    elements.endButton?.addEventListener(
+        "click",
+        () => endCall(true)
+    );
+
+    window.addEventListener("beforeunload", () => {
+        stopMicrophoneCapture();
+
+        if (state.peerConnection) {
+            state.peerConnection.close();
+        }
+
+        if (state.voiceSocket) {
+            state.voiceSocket.close();
+        }
+    });
+}
+
+
+document.addEventListener(
+    "DOMContentLoaded",
+    initializeApplication
+);
