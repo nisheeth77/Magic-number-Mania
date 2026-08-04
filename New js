@@ -1390,3 +1390,94 @@ document.addEventListener(
     "DOMContentLoaded",
     initializeApplication
 );
+
+
+
+
+peerConnection.ontrack = async (event) => {
+    console.log(
+        "Remote track received:",
+        event.track.kind,
+        event.track.readyState
+    );
+
+    const incomingStream =
+        event.streams && event.streams[0]
+            ? event.streams[0]
+            : state.remoteStream;
+
+    if (!event.streams?.[0]) {
+        state.remoteStream.addTrack(event.track);
+    } else {
+        state.remoteStream = incomingStream;
+    }
+
+    if (event.track.kind === "video" && elements.avatarVideo) {
+        elements.avatarVideo.srcObject = incomingStream;
+        elements.avatarVideo.style.display = "block";
+        elements.avatarVideo.muted = true;
+        elements.avatarVideo.autoplay = true;
+        elements.avatarVideo.playsInline = true;
+
+        try {
+            await elements.avatarVideo.play();
+            console.log("Avatar video playback started");
+        } catch (error) {
+            console.error("Avatar video play failed:", error);
+        }
+
+        if (elements.avatarPlaceholder) {
+            elements.avatarPlaceholder.hidden = true;
+            elements.avatarPlaceholder.style.display = "none";
+        }
+    }
+
+    if (event.track.kind === "audio" && elements.avatarAudio) {
+        elements.avatarAudio.srcObject = incomingStream;
+        elements.avatarAudio.muted = false;
+        elements.avatarAudio.volume = 1;
+
+        try {
+            await elements.avatarAudio.play();
+            console.log("Avatar audio playback started");
+        } catch (error) {
+            console.error("Avatar audio play failed:", error);
+            setStatus(
+                "Click the page once to enable audio",
+                "connecting"
+            );
+        }
+    }
+};
+
+peerConnection.oniceconnectionstatechange = () => {
+    console.log(
+        "Avatar ICE state:",
+        peerConnection.iceConnectionState
+    );
+};
+
+peerConnection.onconnectionstatechange = () => {
+    console.log(
+        "Avatar connection state:",
+        peerConnection.connectionState
+    );
+};
+
+peerConnection.onicecandidateerror = (event) => {
+    console.error("Avatar ICE candidate error:", event);
+};
+
+#avatarVideo {
+    width: 100%;
+    height: 100%;
+    display: block;
+    object-fit: contain;
+    background: #101820;
+}
+
+#avatarAudio {
+    display: none;
+}
+
+
