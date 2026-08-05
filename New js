@@ -2,14 +2,12 @@
 
 /* =========================================================
    DU Voice Avatar
-   Browser ↔ FastAPI WebSocket ↔ Azure Voice Live
-   Avatar video/audio uses WebRTC.
-   Microphone audio uses WebSocket PCM16.
-   ========================================================= */
+   Browser <-> FastAPI WebSocket <-> Azure Voice Live
 
-
-/* =========================================================
-   Application state
+   - Microphone input: PCM16 mono, 24 kHz, sent as binary WS data
+   - Agent transcript/events: received through /ws/voice
+   - Avatar video + primary avatar audio: WebRTC
+   - Agent PCM audio: WebSocket fallback when WebRTC audio is absent
    ========================================================= */
 
 const state = {
@@ -17,12 +15,25 @@ const state = {
 
     voiceSocket: null,
     peerConnection: null,
-    remoteStream: null,
+    avatarDataChannel: null,
+
+    remoteVideoStream: null,
+    remoteAudioStream: null,
+    remoteAudioTrackActive: false,
+
+    avatarConfigSent: false,
+    avatarConnectStarted: false,
+    avatarConnected: false,
 
     microphoneStream: null,
-    audioContext: null,
+    captureContext: null,
     microphoneSource: null,
     audioProcessor: null,
+
+    playbackContext: null,
+    nextPlaybackTime: 0,
+    playbackSources: new Set(),
+    outputSampleRate: 24000,
 
     callActive: false,
     callStarting: false,
@@ -51,17 +62,13 @@ const elements = {
     callTimer: document.getElementById("callTimer"),
 
     avatarVideo: document.getElementById("avatarVideo"),
-    avatarPlaceholder:
-        document.getElementById("avatarPlaceholder"),
+    avatarAudio: document.getElementById("avatarAudio"),
+    avatarPlaceholder: document.getElementById("avatarPlaceholder"),
 
-    listeningIndicator:
-        document.getElementById("listeningIndicator"),
+    listeningIndicator: document.getElementById("listeningIndicator"),
+    speakingIndicator: document.getElementById("speakingIndicator"),
 
-    speakingIndicator:
-        document.getElementById("speakingIndicator"),
-
-    transcriptContainer:
-        document.getElementById("transcriptContainer")
+    transcriptContainer: document.getElementById("transcriptContainer")
 };
 
 
@@ -79,6 +86,9 @@ function log(message, value = undefined) {
     }
 }
 
+function errorMessage(error) {
+    return error instanceof Error ? error.message : String(error);
+}
 
 function setStatus(message, statusClass = "disconnected") {
     if (elements.statusText) {
@@ -101,7 +111,6 @@ function setStatus(message, statusClass = "disconnected") {
     elements.statusDot.classList.add(statusClass);
 }
 
-
 function setAssistantSpeaking(isSpeaking) {
     if (elements.speakingIndicator) {
         elements.speakingIndicator.hidden = !isSpeaking;
@@ -112,7 +121,6 @@ function setAssistantSpeaking(isSpeaking) {
     }
 }
 
-
 function setUserListening(isListening) {
     if (elements.listeningIndicator) {
         elements.listeningIndicator.hidden = !isListening;
@@ -122,7 +130,6 @@ function setUserListening(isListening) {
         setStatus("Listening…", "listening");
     }
 }
-
 
 function updateButtons() {
     if (elements.startButton) {
@@ -140,10 +147,49 @@ function updateButtons() {
     }
 }
 
-
 function showError(message) {
     console.error(message);
     setStatus(`Error: ${message}`, "error");
+}
+
+function getOrCreateAvatarAudioElement() {
+    if (elements.avatarAudio) {
+        return elements.avatarAudio;
+    }
+
+    const audio = document.createElement("audio");
+    audio.id = "avatarAudio";
+    audio.autoplay = true;
+    audio.controls = false;
+    audio.style.display = "none";
+    document.body.appendChild(audio);
+    elements.avatarAudio = audio;
+
+    return audio;
+}
+
+async function unlockBrowserAudio() {
+    const AudioContextClass =
+        window.AudioContext || window.webkitAudioContext;
+
+    if (!AudioContextClass) {
+        throw new Error("Web Audio API is not supported by this browser.");
+    }
+
+    if (!state.playbackContext) {
+        state.playbackContext = new AudioContextClass({
+            sampleRate: state.outputSampleRate
+        });
+        state.nextPlaybackTime = state.playbackContext.currentTime;
+    }
+
+    if (state.playbackContext.state === "suspended") {
+        await state.playbackContext.resume();
+    }
+
+    const avatarAudio = getOrCreateAvatarAudioElement();
+    avatarAudio.muted = false;
+    avatarAudio.volume = 1;
 }
 
 
@@ -177,12 +223,9 @@ async function loadConfiguration() {
     return config;
 }
 
-
 function createBrowserWebSocketUrl(path) {
     const protocol =
-        window.location.protocol === "https:"
-            ? "wss:"
-            : "ws:";
+        window.location.protocol === "https:" ? "wss:" : "ws:";
 
     return `${protocol}//${window.location.host}${path}`;
 }
@@ -204,7 +247,6 @@ function startCallTimer() {
     );
 }
 
-
 function updateCallTimer() {
     if (!state.callStartedAt || !elements.callTimer) {
         return;
@@ -222,7 +264,6 @@ function updateCallTimer() {
         `${String(seconds).padStart(2, "0")}`;
 }
 
-
 function stopCallTimer() {
     if (state.timerHandle !== null) {
         window.clearInterval(state.timerHandle);
@@ -238,7 +279,7 @@ function stopCallTimer() {
 
 
 /* =========================================================
-   Transcript functions
+   Transcript UI
    ========================================================= */
 
 function removeWelcomeMessage() {
@@ -252,7 +293,6 @@ function removeWelcomeMessage() {
     }
 }
 
-
 function scrollTranscriptToBottom() {
     if (!elements.transcriptContainer) {
         return;
@@ -261,7 +301,6 @@ function scrollTranscriptToBottom() {
     elements.transcriptContainer.scrollTop =
         elements.transcriptContainer.scrollHeight;
 }
-
 
 function getLiveTranscriptBubble(role) {
     if (!elements.transcriptContainer) {
@@ -273,7 +312,6 @@ function getLiveTranscriptBubble(role) {
     );
 }
 
-
 function createTranscriptBubble(role, text, isLive = false) {
     if (!elements.transcriptContainer || !text) {
         return null;
@@ -282,7 +320,6 @@ function createTranscriptBubble(role, text, isLive = false) {
     removeWelcomeMessage();
 
     const message = document.createElement("div");
-
     message.className =
         role === "user"
             ? "transcript-message user-message"
@@ -294,8 +331,7 @@ function createTranscriptBubble(role, text, isLive = false) {
 
     const speaker = document.createElement("div");
     speaker.className = "transcript-speaker";
-    speaker.textContent =
-        role === "user" ? "You" : "Lisa";
+    speaker.textContent = role === "user" ? "You" : "Lisa";
 
     const body = document.createElement("div");
     body.className = "transcript-text";
@@ -303,14 +339,11 @@ function createTranscriptBubble(role, text, isLive = false) {
 
     message.appendChild(speaker);
     message.appendChild(body);
-
     elements.transcriptContainer.appendChild(message);
 
     scrollTranscriptToBottom();
-
     return message;
 }
-
 
 function updateLiveTranscript(role, text) {
     if (!text) {
@@ -320,11 +353,7 @@ function updateLiveTranscript(role, text) {
     let bubble = getLiveTranscriptBubble(role);
 
     if (!bubble) {
-        bubble = createTranscriptBubble(
-            role,
-            text,
-            true
-        );
+        bubble = createTranscriptBubble(role, text, true);
     }
 
     const body = bubble?.querySelector(".transcript-text");
@@ -335,7 +364,6 @@ function updateLiveTranscript(role, text) {
 
     scrollTranscriptToBottom();
 }
-
 
 function finalizeTranscript(role, text) {
     if (!text) {
@@ -369,17 +397,15 @@ function sendJsonEvent(event) {
         !state.voiceSocket ||
         state.voiceSocket.readyState !== WebSocket.OPEN
     ) {
-        log("Cannot send event because WebSocket is not open");
+        log(`Cannot send ${event.type}; WebSocket is not open.`);
         return false;
     }
 
     state.voiceSocket.send(JSON.stringify(event));
-
-    log(`Browser → backend: ${event.type}`);
+    log(`Browser -> backend: ${event.type}`);
 
     return true;
 }
-
 
 function connectVoiceWebSocket() {
     return new Promise((resolve, reject) => {
@@ -390,7 +416,6 @@ function connectVoiceWebSocket() {
         log(`Opening Voice WebSocket: ${url}`);
 
         const socket = new WebSocket(url);
-
         socket.binaryType = "arraybuffer";
         state.voiceSocket = socket;
 
@@ -402,7 +427,6 @@ function connectVoiceWebSocket() {
             }
 
             settled = true;
-
             reject(
                 new Error(
                     "Timed out while connecting to the backend."
@@ -412,14 +436,13 @@ function connectVoiceWebSocket() {
 
         socket.onopen = () => {
             log("Browser WebSocket opened");
-
             setStatus(
                 "Connecting to Azure Voice Live…",
                 "connecting"
             );
         };
 
-        socket.onmessage = async (event) => {
+        socket.onmessage = (event) => {
             if (typeof event.data !== "string") {
                 return;
             }
@@ -428,7 +451,7 @@ function connectVoiceWebSocket() {
 
             try {
                 message = JSON.parse(event.data);
-            } catch (error) {
+            } catch {
                 console.error(
                     "Invalid JSON received from backend:",
                     event.data
@@ -436,7 +459,7 @@ function connectVoiceWebSocket() {
                 return;
             }
 
-            log(`Backend → browser: ${message.type}`);
+            log(`Backend -> browser: ${message.type}`);
 
             if (
                 !settled &&
@@ -447,14 +470,21 @@ function connectVoiceWebSocket() {
                 resolve();
             }
 
-            await handleVoiceLiveEvent(message);
+            Promise.resolve(handleVoiceLiveEvent(message)).catch(
+                (error) => {
+                    console.error(
+                        `Failed to process ${message.type}:`,
+                        error
+                    );
+                    showError(errorMessage(error));
+                }
+            );
         };
 
         socket.onerror = () => {
             if (!settled) {
                 settled = true;
                 window.clearTimeout(connectionTimeout);
-
                 reject(
                     new Error(
                         "Unable to establish the backend WebSocket."
@@ -465,14 +495,13 @@ function connectVoiceWebSocket() {
 
         socket.onclose = (event) => {
             log(
-                `Voice WebSocket closed: ` +
-                `${event.code} ${event.reason || ""}`
+                `Voice WebSocket closed: ${event.code} ` +
+                `${event.reason || ""}`
             );
 
             if (!settled) {
                 settled = true;
                 window.clearTimeout(connectionTimeout);
-
                 reject(
                     new Error(
                         "Voice WebSocket closed before connecting."
@@ -485,7 +514,7 @@ function connectVoiceWebSocket() {
                 (state.callActive || state.callStarting)
             ) {
                 showError("Voice connection was closed.");
-                cleanupCallResources();
+                cleanupCallResources(false).catch(console.error);
             }
         };
     });
@@ -493,7 +522,7 @@ function connectVoiceWebSocket() {
 
 
 /* =========================================================
-   SDP Base64 helpers
+   Base64 and SDP helpers
    ========================================================= */
 
 function encodeBase64Utf8(value) {
@@ -507,7 +536,6 @@ function encodeBase64Utf8(value) {
     return window.btoa(binary);
 }
 
-
 function decodeBase64Utf8(value) {
     const binary = window.atob(value);
     const bytes = new Uint8Array(binary.length);
@@ -519,41 +547,55 @@ function decodeBase64Utf8(value) {
     return new TextDecoder().decode(bytes);
 }
 
+function decodeAvatarServerDescription(serverSdp) {
+    if (!serverSdp || typeof serverSdp !== "string") {
+        throw new Error("Avatar server SDP is missing.");
+    }
 
-function decodeServerDescription(serverSdp) {
-    const decoded = decodeBase64Utf8(serverSdp);
+    let decodedValue = serverSdp;
 
-    /*
-     * Voice Live commonly returns the complete
-     * RTCSessionDescription as Base64 JSON.
-     */
     try {
-        const parsed = JSON.parse(decoded);
+        decodedValue = decodeBase64Utf8(serverSdp);
+    } catch {
+        // Some clients/proxies can expose raw SDP instead.
+    }
 
-        if (parsed.sdp) {
+    try {
+        const parsed = JSON.parse(decodedValue);
+
+        if (parsed?.sdp) {
             return {
                 type: parsed.type || "answer",
                 sdp: parsed.sdp
             };
         }
     } catch {
-        // Fall back to treating the decoded value as raw SDP.
+        // Not JSON; treat the decoded value as raw SDP.
     }
 
     return {
         type: "answer",
-        sdp: decoded
+        sdp: decodedValue
     };
 }
 
+function normalizeIceServers(value) {
+    if (!Array.isArray(value)) {
+        return [];
+    }
 
-/* =========================================================
-   WebRTC avatar connection
-   ========================================================= */
+    return value
+        .filter((server) => server && server.urls)
+        .map((server) => ({
+            urls: server.urls,
+            username: server.username || undefined,
+            credential: server.credential || undefined
+        }));
+}
 
 function waitForIceGatheringComplete(
     peerConnection,
-    timeoutMilliseconds = 8000
+    timeoutMilliseconds = 10000
 ) {
     if (peerConnection.iceGatheringState === "complete") {
         return Promise.resolve();
@@ -568,20 +610,20 @@ function waitForIceGatheringComplete(
             }
 
             finished = true;
-
             peerConnection.removeEventListener(
                 "icegatheringstatechange",
                 onStateChanged
             );
-
             resolve();
         };
 
         const onStateChanged = () => {
-            if (
-                peerConnection.iceGatheringState ===
-                "complete"
-            ) {
+            log(
+                `Avatar ICE gathering: ` +
+                peerConnection.iceGatheringState
+            );
+
+            if (peerConnection.iceGatheringState === "complete") {
                 finish();
             }
         };
@@ -596,77 +638,133 @@ function waitForIceGatheringComplete(
 }
 
 
-async function createAvatarPeerConnection() {
-    state.remoteStream = new MediaStream();
+/* =========================================================
+   WebRTC avatar
+   ========================================================= */
+
+function sendAvatarConfiguration() {
+    if (state.avatarConfigSent) {
+        return;
+    }
+
+    const avatar = state.config?.avatar || {};
+
+    const sent = sendJsonEvent({
+        type: "session.update",
+        session: {
+            modalities: ["text", "audio"],
+            avatar: {
+                type: "video-avatar",
+                character: avatar.character || "lisa",
+                style: avatar.style || "casual-sitting",
+                customized: avatar.customized ?? false,
+                output_protocol: "webrtc",
+
+                // Also provide PCM output on the WS as a safe fallback.
+                // It is only played when no WebRTC audio track is active.
+                output_audit_audio: true,
+
+                video: {
+                    codec: "h264",
+                    bitrate: 2000000,
+                    resolution: {
+                        width: 1280,
+                        height: 720
+                    }
+                }
+            }
+        }
+    });
+
+    if (sent) {
+        state.avatarConfigSent = true;
+        setStatus("Preparing Lisa’s avatar…", "connecting");
+    }
+}
+
+async function attachRemoteVideoTrack(event) {
+    const stream =
+        event.streams?.[0] || new MediaStream([event.track]);
+
+    state.remoteVideoStream = stream;
+
+    if (!elements.avatarVideo) {
+        throw new Error("avatarVideo element was not found in HTML.");
+    }
+
+    elements.avatarVideo.srcObject = stream;
+    elements.avatarVideo.autoplay = true;
+    elements.avatarVideo.playsInline = true;
+    elements.avatarVideo.muted = true;
+    elements.avatarVideo.style.display = "block";
+
+    if (elements.avatarPlaceholder) {
+        elements.avatarPlaceholder.hidden = true;
+        elements.avatarPlaceholder.style.display = "none";
+    }
+
+    try {
+        await elements.avatarVideo.play();
+        log("Avatar video playback started");
+    } catch (error) {
+        console.error("Avatar video play failed:", error);
+        setStatus(
+            "Click once on the page to enable avatar playback",
+            "connecting"
+        );
+    }
+}
+
+async function attachRemoteAudioTrack(event) {
+    const stream =
+        event.streams?.[0] || new MediaStream([event.track]);
+
+    state.remoteAudioStream = stream;
+    state.remoteAudioTrackActive = true;
+
+    // Stop fallback PCM audio to avoid duplicate playback.
+    clearAgentAudio();
+
+    const avatarAudio = getOrCreateAvatarAudioElement();
+    avatarAudio.srcObject = stream;
+    avatarAudio.autoplay = true;
+    avatarAudio.muted = false;
+    avatarAudio.volume = 1;
+
+    event.track.onended = () => {
+        state.remoteAudioTrackActive = false;
+        log("Avatar WebRTC audio track ended");
+    };
+
+    try {
+        await avatarAudio.play();
+        log("Avatar WebRTC audio playback started");
+    } catch (error) {
+        console.error("Avatar audio play failed:", error);
+        state.remoteAudioTrackActive = false;
+        setStatus(
+            "Click once on the page to enable sound",
+            "connecting"
+        );
+    }
+}
+
+async function createAvatarPeerConnection(iceServers = []) {
+    if (state.avatarConnectStarted || state.peerConnection) {
+        return;
+    }
+
+    state.avatarConnectStarted = true;
+
+    const normalizedIceServers = normalizeIceServers(iceServers);
+    log("Avatar ICE servers", normalizedIceServers);
 
     const peerConnection = new RTCPeerConnection({
+        iceServers: normalizedIceServers,
         bundlePolicy: "max-bundle"
     });
 
     state.peerConnection = peerConnection;
-
-    peerConnection.addTransceiver("audio", {
-        direction: "recvonly"
-    });
-
-    peerConnection.addTransceiver("video", {
-        direction: "recvonly"
-    });
-
-    peerConnection.ontrack = async (event) => {
-        log(`Avatar ${event.track.kind} track received`);
-
-        state.remoteStream.addTrack(event.track);
-
-        if (!elements.avatarVideo) {
-            return;
-        }
-
-        elements.avatarVideo.srcObject = state.remoteStream;
-        elements.avatarVideo.autoplay = true;
-        elements.avatarVideo.playsInline = true;
-        elements.avatarVideo.muted = false;
-
-        if (elements.avatarPlaceholder) {
-            elements.avatarPlaceholder.hidden = true;
-        }
-
-        try {
-            await elements.avatarVideo.play();
-        } catch (error) {
-            log(
-                "Browser blocked automatic avatar playback",
-                error
-            );
-        }
-    };
-
-    peerConnection.onconnectionstatechange = () => {
-        const connectionState =
-            peerConnection.connectionState;
-
-        log(
-            `Avatar WebRTC state: ${connectionState}`
-        );
-
-        if (connectionState === "connected") {
-            setStatus(
-                "Connected — you can speak",
-                "connected"
-            );
-        }
-
-        if (
-            connectionState === "failed" ||
-            connectionState === "closed"
-        ) {
-            if (!state.callEnding) {
-                showError(
-                    `Avatar connection ${connectionState}.`
-                );
-            }
-        }
-    };
 
     peerConnection.oniceconnectionstatechange = () => {
         log(
@@ -675,809 +773,15 @@ async function createAvatarPeerConnection() {
         );
     };
 
-    const offer =
-        await peerConnection.createOffer();
+    peerConnection.onconnectionstatechange = () => {
+        const connectionState = peerConnection.connectionState;
+        log(`Avatar connection state: ${connectionState}`);
 
-    await peerConnection.setLocalDescription(offer);
-
-    await waitForIceGatheringComplete(peerConnection);
-
-    if (!peerConnection.localDescription) {
-        throw new Error(
-            "Browser failed to create the avatar SDP offer."
-        );
-    }
-
-    const clientDescription = JSON.stringify({
-        type: peerConnection.localDescription.type,
-        sdp: peerConnection.localDescription.sdp
-    });
-
-    const clientSdp = encodeBase64Utf8(
-        clientDescription
-    );
-
-    sendJsonEvent({
-        type: "session.avatar.connect",
-        client_sdp: clientSdp
-    });
-
-    log("Avatar SDP offer sent");
-}
-
-
-async function applyAvatarServerSdp(serverSdp) {
-    if (!state.peerConnection) {
-        throw new Error(
-            "Avatar peer connection does not exist."
-        );
-    }
-
-    if (!serverSdp) {
-        throw new Error(
-            "session.avatar.connecting did not contain server_sdp."
-        );
-    }
-
-    const remoteDescription =
-        decodeServerDescription(serverSdp);
-
-    await state.peerConnection.setRemoteDescription(
-        remoteDescription
-    );
-
-    log("Avatar server SDP applied");
-}
-
-
-/* =========================================================
-   Microphone capture
-   ========================================================= */
-
-function downsampleTo24Khz(inputSamples, inputRate) {
-    const outputRate = 24000;
-
-    if (inputRate === outputRate) {
-        return new Float32Array(inputSamples);
-    }
-
-    const ratio = inputRate / outputRate;
-    const outputLength = Math.round(
-        inputSamples.length / ratio
-    );
-
-    const output = new Float32Array(outputLength);
-
-    let outputIndex = 0;
-    let inputIndex = 0;
-
-    while (outputIndex < outputLength) {
-        const nextInputIndex = Math.round(
-            (outputIndex + 1) * ratio
-        );
-
-        let total = 0;
-        let count = 0;
-
-        for (
-            let index = inputIndex;
-            index < nextInputIndex &&
-            index < inputSamples.length;
-            index += 1
-        ) {
-            total += inputSamples[index];
-            count += 1;
+        if (connectionState === "connected") {
+            state.avatarConnected = true;
+            setStatus("Connected — you can speak", "connected");
         }
 
-        output[outputIndex] =
-            count > 0 ? total / count : 0;
-
-        outputIndex += 1;
-        inputIndex = nextInputIndex;
-    }
-
-    return output;
-}
-
-
-function float32ToPcm16(floatSamples) {
-    const pcmBuffer = new ArrayBuffer(
-        floatSamples.length * 2
-    );
-
-    const view = new DataView(pcmBuffer);
-
-    for (
-        let index = 0;
-        index < floatSamples.length;
-        index += 1
-    ) {
-        const sample = Math.max(
-            -1,
-            Math.min(1, floatSamples[index])
-        );
-
-        const pcmValue =
-            sample < 0
-                ? sample * 0x8000
-                : sample * 0x7fff;
-
-        view.setInt16(
-            index * 2,
-            pcmValue,
-            true
-        );
-    }
-
-    return pcmBuffer;
-}
-
-
-async function startMicrophoneCapture() {
-    if (!navigator.mediaDevices?.getUserMedia) {
-        throw new Error(
-            "This browser does not support microphone capture."
-        );
-    }
-
-    state.microphoneStream =
-        await navigator.mediaDevices.getUserMedia({
-            audio: {
-                channelCount: 1,
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: true
-            },
-            video: false
-        });
-
-    const AudioContextClass =
-        window.AudioContext ||
-        window.webkitAudioContext;
-
-    state.audioContext = new AudioContextClass();
-
-    await state.audioContext.resume();
-
-    state.microphoneSource =
-        state.audioContext.createMediaStreamSource(
-            state.microphoneStream
-        );
-
-    /*
-     * ScriptProcessor is used here because it works in a
-     * single app.js file. We can migrate it to AudioWorklet
-     * after the end-to-end flow is confirmed.
-     */
-    state.audioProcessor =
-        state.audioContext.createScriptProcessor(
-            4096,
-            1,
-            1
-        );
-
-    state.audioProcessor.onaudioprocess = (event) => {
         if (
-            !state.callActive ||
-            state.microphoneMuted ||
-            !state.voiceSocket ||
-            state.voiceSocket.readyState !== WebSocket.OPEN
-        ) {
-            return;
-        }
-
-        const inputSamples =
-            event.inputBuffer.getChannelData(0);
-
-        const samples24Khz = downsampleTo24Khz(
-            inputSamples,
-            state.audioContext.sampleRate
-        );
-
-        const pcm16Buffer =
-            float32ToPcm16(samples24Khz);
-
-        state.voiceSocket.send(pcm16Buffer);
-    };
-
-    state.microphoneSource.connect(
-        state.audioProcessor
-    );
-
-    /*
-     * ScriptProcessor needs an output connection to run.
-     * The processor produces silence, so it won't echo
-     * microphone audio.
-     */
-    state.audioProcessor.connect(
-        state.audioContext.destination
-    );
-
-    log(
-        `Microphone started at ` +
-        `${state.audioContext.sampleRate} Hz`
-    );
-}
-
-
-function stopMicrophoneCapture() {
-    if (state.audioProcessor) {
-        state.audioProcessor.onaudioprocess = null;
-
-        try {
-            state.audioProcessor.disconnect();
-        } catch {
-            // Ignore cleanup errors.
-        }
-
-        state.audioProcessor = null;
-    }
-
-    if (state.microphoneSource) {
-        try {
-            state.microphoneSource.disconnect();
-        } catch {
-            // Ignore cleanup errors.
-        }
-
-        state.microphoneSource = null;
-    }
-
-    if (state.microphoneStream) {
-        state.microphoneStream
-            .getTracks()
-            .forEach((track) => track.stop());
-
-        state.microphoneStream = null;
-    }
-
-    if (state.audioContext) {
-        state.audioContext.close().catch(() => { });
-        state.audioContext = null;
-    }
-}
-
-
-/* =========================================================
-   Voice Live events
-   ========================================================= */
-
-async function handleVoiceLiveEvent(message) {
-    if (!message?.type) {
-        return;
-    }
-
-    switch (message.type) {
-        case "application.connecting":
-            setStatus(
-                message.message ||
-                "Connecting to Azure Voice Live…",
-                "connecting"
-            );
-            break;
-
-        case "application.connected":
-            setStatus(
-                "Connected to Voice Live",
-                "connecting"
-            );
-            break;
-
-        case "application.error":
-            throw new Error(
-                message.message ||
-                "The backend reported an error."
-            );
-
-        case "session.created":
-            log("Voice Live session created", message.session);
-
-            /*
-             * Keep the Foundry agent's stored voice and
-             * behaviour configuration. Only confirm the
-             * browser microphone audio format.
-             */
-            sendJsonEvent({
-                type: "session.update",
-                session: {
-                    input_audio_format: "pcm16",
-                    input_audio_sampling_rate: 24000
-                }
-            });
-
-            await createAvatarPeerConnection();
-            break;
-
-        case "session.updated":
-            log("Voice Live session updated", message.session);
-            break;
-
-        case "session.avatar.connecting":
-            setStatus(
-                "Connecting Lisa’s avatar…",
-                "connecting"
-            );
-
-            await applyAvatarServerSdp(
-                message.server_sdp
-            );
-            break;
-
-        case "session.avatar.switch_to_speaking":
-            setUserListening(false);
-            setAssistantSpeaking(true);
-            break;
-
-        case "session.avatar.switch_to_idle":
-            setAssistantSpeaking(false);
-
-            if (state.callActive) {
-                setStatus(
-                    "Connected — you can speak",
-                    "connected"
-                );
-            }
-            break;
-
-        case "input_audio_buffer.speech_started":
-            state.currentUserTranscript = "";
-
-            /*
-             * Clear queued avatar speech when the customer
-             * interrupts Lisa.
-             */
-            sendJsonEvent({
-                type: "output_audio_buffer.clear"
-            });
-
-            setAssistantSpeaking(false);
-            setUserListening(true);
-            break;
-
-        case "input_audio_buffer.speech_stopped":
-            setUserListening(false);
-
-            setStatus(
-                "Processing your request…",
-                "connecting"
-            );
-            break;
-
-        case "conversation.item.input_audio_transcription.delta":
-            state.currentUserTranscript +=
-                message.delta || "";
-
-            updateLiveTranscript(
-                "user",
-                state.currentUserTranscript
-            );
-            break;
-
-        case "conversation.item.input_audio_transcription.completed":
-            state.currentUserTranscript =
-                message.transcript ||
-                state.currentUserTranscript;
-
-            finalizeTranscript(
-                "user",
-                state.currentUserTranscript
-            );
-
-            state.currentUserTranscript = "";
-            break;
-
-        case "response.created":
-            state.currentAgentTranscript = "";
-
-            setStatus(
-                "Lisa is preparing a response…",
-                "connecting"
-            );
-            break;
-
-        case "response.audio_transcript.delta":
-            state.currentAgentTranscript +=
-                message.delta || "";
-
-            updateLiveTranscript(
-                "assistant",
-                state.currentAgentTranscript
-            );
-            break;
-
-        case "response.audio_transcript.done":
-            state.currentAgentTranscript =
-                message.transcript ||
-                state.currentAgentTranscript;
-
-            finalizeTranscript(
-                "assistant",
-                state.currentAgentTranscript
-            );
-
-            state.currentAgentTranscript = "";
-            break;
-
-        case "response.text.delta":
-            state.currentAgentTranscript +=
-                message.delta || "";
-
-            updateLiveTranscript(
-                "assistant",
-                state.currentAgentTranscript
-            );
-            break;
-
-        case "response.text.done":
-            state.currentAgentTranscript =
-                message.text ||
-                state.currentAgentTranscript;
-
-            finalizeTranscript(
-                "assistant",
-                state.currentAgentTranscript
-            );
-
-            state.currentAgentTranscript = "";
-            break;
-
-        case "response.done":
-        case "response.audio.done":
-            if (!elements.speakingIndicator?.hidden) {
-                break;
-            }
-
-            setStatus(
-                "Connected — you can speak",
-                "connected"
-            );
-            break;
-
-        case "warning":
-            console.warn(
-                "Voice Live warning:",
-                message.warning || message
-            );
-            break;
-
-        case "error":
-            throw new Error(
-                message.error?.message ||
-                "Azure Voice Live returned an error."
-            );
-
-        default:
-            log(`Unhandled event: ${message.type}`);
-            break;
-    }
-}
-
-
-/* =========================================================
-   Call controls
-   ========================================================= */
-
-async function startCall() {
-    if (state.callActive || state.callStarting) {
-        return;
-    }
-
-    state.callStarting = true;
-    state.callEnding = false;
-
-    updateButtons();
-
-    try {
-        setStatus("Preparing call…", "connecting");
-
-        if (!state.config) {
-            state.config = await loadConfiguration();
-        }
-
-        await connectVoiceWebSocket();
-
-        state.callActive = true;
-        state.callStarting = false;
-
-        startCallTimer();
-        updateButtons();
-
-        await startMicrophoneCapture();
-
-        setStatus(
-            "Connected — preparing Lisa…",
-            "connecting"
-        );
-    } catch (error) {
-        state.callStarting = false;
-
-        showError(
-            error instanceof Error
-                ? error.message
-                : String(error)
-        );
-
-        await endCall(false);
-    }
-}
-
-
-function toggleMute() {
-    if (!state.callActive) {
-        return;
-    }
-
-    state.microphoneMuted =
-        !state.microphoneMuted;
-
-    if (state.microphoneStream) {
-        state.microphoneStream
-            .getAudioTracks()
-            .forEach((track) => {
-                track.enabled =
-                    !state.microphoneMuted;
-            });
-    }
-
-    if (elements.muteButton) {
-        elements.muteButton.classList.toggle(
-            "muted",
-            state.microphoneMuted
-        );
-
-        const label =
-            elements.muteButton.querySelector(
-                ".button-label"
-            );
-
-        if (label) {
-            label.textContent =
-                state.microphoneMuted
-                    ? "Unmute"
-                    : "Mute";
-        }
-    }
-
-    setStatus(
-        state.microphoneMuted
-            ? "Microphone muted"
-            : "Connected — you can speak",
-        state.microphoneMuted
-            ? "disconnected"
-            : "connected"
-    );
-}
-
-
-async function endCall(updateUi = true) {
-    if (state.callEnding) {
-        return;
-    }
-
-    state.callEnding = true;
-    state.callActive = false;
-    state.callStarting = false;
-
-    stopCallTimer();
-    stopMicrophoneCapture();
-
-    setUserListening(false);
-    setAssistantSpeaking(false);
-
-    if (state.peerConnection) {
-        state.peerConnection.ontrack = null;
-
-        try {
-            state.peerConnection.close();
-        } catch {
-            // Ignore cleanup errors.
-        }
-
-        state.peerConnection = null;
-    }
-
-    if (state.remoteStream) {
-        state.remoteStream
-            .getTracks()
-            .forEach((track) => track.stop());
-
-        state.remoteStream = null;
-    }
-
-    if (elements.avatarVideo) {
-        elements.avatarVideo.pause();
-        elements.avatarVideo.srcObject = null;
-    }
-
-    if (elements.avatarPlaceholder) {
-        elements.avatarPlaceholder.hidden = false;
-    }
-
-    if (
-        state.voiceSocket &&
-        state.voiceSocket.readyState === WebSocket.OPEN
-    ) {
-        state.voiceSocket.send(
-            JSON.stringify({
-                type: "application.disconnect"
-            })
-        );
-
-        state.voiceSocket.close(
-            1000,
-            "Call ended by user"
-        );
-    }
-
-    state.voiceSocket = null;
-    state.microphoneMuted = false;
-
-    if (elements.muteButton) {
-        elements.muteButton.classList.remove("muted");
-
-        const label =
-            elements.muteButton.querySelector(
-                ".button-label"
-            );
-
-        if (label) {
-            label.textContent = "Mute";
-        }
-    }
-
-    if (updateUi) {
-        setStatus("Call ended", "disconnected");
-    }
-
-    state.callEnding = false;
-    updateButtons();
-
-    log("Call resources cleaned up");
-}
-
-
-/* =========================================================
-   Initialization
-   ========================================================= */
-
-async function initializeApplication() {
-    setStatus("Ready to start", "disconnected");
-    stopCallTimer();
-    updateButtons();
-
-    try {
-        state.config = await loadConfiguration();
-
-        log("Frontend configuration loaded", state.config);
-    } catch (error) {
-        showError(
-            error instanceof Error
-                ? error.message
-                : String(error)
-        );
-    }
-
-    elements.startButton?.addEventListener(
-        "click",
-        startCall
-    );
-
-    elements.muteButton?.addEventListener(
-        "click",
-        toggleMute
-    );
-
-    elements.endButton?.addEventListener(
-        "click",
-        () => endCall(true)
-    );
-
-    window.addEventListener("beforeunload", () => {
-        stopMicrophoneCapture();
-
-        if (state.peerConnection) {
-            state.peerConnection.close();
-        }
-
-        if (state.voiceSocket) {
-            state.voiceSocket.close();
-        }
-    });
-}
-
-
-document.addEventListener(
-    "DOMContentLoaded",
-    initializeApplication
-);
-
-
-
-
-peerConnection.ontrack = async (event) => {
-    console.log(
-        "Remote track received:",
-        event.track.kind,
-        event.track.readyState
-    );
-
-    const incomingStream =
-        event.streams && event.streams[0]
-            ? event.streams[0]
-            : state.remoteStream;
-
-    if (!event.streams?.[0]) {
-        state.remoteStream.addTrack(event.track);
-    } else {
-        state.remoteStream = incomingStream;
-    }
-
-    if (event.track.kind === "video" && elements.avatarVideo) {
-        elements.avatarVideo.srcObject = incomingStream;
-        elements.avatarVideo.style.display = "block";
-        elements.avatarVideo.muted = true;
-        elements.avatarVideo.autoplay = true;
-        elements.avatarVideo.playsInline = true;
-
-        try {
-            await elements.avatarVideo.play();
-            console.log("Avatar video playback started");
-        } catch (error) {
-            console.error("Avatar video play failed:", error);
-        }
-
-        if (elements.avatarPlaceholder) {
-            elements.avatarPlaceholder.hidden = true;
-            elements.avatarPlaceholder.style.display = "none";
-        }
-    }
-
-    if (event.track.kind === "audio" && elements.avatarAudio) {
-        elements.avatarAudio.srcObject = incomingStream;
-        elements.avatarAudio.muted = false;
-        elements.avatarAudio.volume = 1;
-
-        try {
-            await elements.avatarAudio.play();
-            console.log("Avatar audio playback started");
-        } catch (error) {
-            console.error("Avatar audio play failed:", error);
-            setStatus(
-                "Click the page once to enable audio",
-                "connecting"
-            );
-        }
-    }
-};
-
-peerConnection.oniceconnectionstatechange = () => {
-    console.log(
-        "Avatar ICE state:",
-        peerConnection.iceConnectionState
-    );
-};
-
-peerConnection.onconnectionstatechange = () => {
-    console.log(
-        "Avatar connection state:",
-        peerConnection.connectionState
-    );
-};
-
-peerConnection.onicecandidateerror = (event) => {
-    console.error("Avatar ICE candidate error:", event);
-};
-
-#avatarVideo {
-    width: 100%;
-    height: 100%;
-    display: block;
-    object-fit: contain;
-    background: #101820;
-}
-
-#avatarAudio {
-    display: none;
-}
-
-
+            (connectionState === "failed" ||
+      
