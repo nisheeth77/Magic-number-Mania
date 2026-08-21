@@ -1,0 +1,1149 @@
+import json
+import re
+import sys
+from pathlib import Path
+
+
+# ============================================================
+# COMMON UTILITIES
+# ============================================================
+
+def escape_text(value):
+    """
+    Escape text used inside MDD double quotes.
+    """
+    if value is None:
+        return ""
+
+    value = str(value)
+    value = value.replace("\\", "\\\\")
+    value = value.replace('"', '\\"')
+
+    return value
+
+
+def sanitize_name(value):
+    """
+    Convert option values into safe MDD/MRS identifiers.
+
+    Example:
+        "Very Good" -> Very_Good
+        "1-star"     -> _1_star
+    """
+    value = str(value).strip()
+
+    value = re.sub(r"[^A-Za-z0-9_]", "_", value)
+
+    if value and value[0].isdigit():
+        value = "_" + value
+
+    return value or "option"
+
+
+# ============================================================
+# CONDITION CONVERSION
+# ============================================================
+
+def convert_single_condition(condition):
+    """
+    Convert JSON conditions to MRS syntax.
+
+    Q1 == 'yes'
+        ->
+    Q1 = {yes}
+
+    Q1 != 'no'
+        ->
+    Q1 <> {no}
+    """
+
+    condition = condition.strip()
+
+    # Equality
+    match = re.fullmatch(
+        r"""([A-Za-z_][A-Za-z0-9_]*)\s*==\s*['"]?([^'"]+?)['"]?""",
+        condition
+    )
+
+    if match:
+        variable = match.group(1)
+        value = sanitize_name(match.group(2).strip())
+
+        return f"{variable} = {{{value}}}"
+
+    # Not equal
+    match = re.fullmatch(
+        r"""([A-Za-z_][A-Za-z0-9_]*)\s*!=\s*['"]?([^'"]+?)['"]?""",
+        condition
+    )
+
+    if match:
+        variable = match.group(1)
+        value = sanitize_name(match.group(2).strip())
+
+        return f"{variable} <> {{{value}}}"
+
+    return condition
+
+
+def convert_condition(condition):
+    """
+    Examples:
+
+    Q1 == 'yes'
+        ->
+    Q1 = {yes}
+
+    Q1 == 'yes' && Q1a == 'truck'
+        ->
+    Q1 = {yes} And Q1a = {truck}
+
+    Q2 == 'unemployed' || Q2 == 'student'
+        ->
+    Q2 = {unemployed} Or Q2 = {student}
+    """
+
+    if not condition:
+        return ""
+
+    condition = condition.strip()
+
+    # Normalize operators
+    condition = condition.replace("&&", " AND ")
+    condition = condition.replace("||", " OR ")
+
+    condition = re.sub(
+        r"\band\b",
+        " AND ",
+        condition,
+        flags=re.IGNORECASE
+    )
+
+    condition = re.sub(
+        r"\bor\b",
+        " OR ",
+        condition,
+        flags=re.IGNORECASE
+    )
+
+    parts = re.split(
+        r"\s+(AND|OR)\s+",
+        condition,
+        flags=re.IGNORECASE
+    )
+
+    converted = []
+
+    for part in parts:
+        part = part.strip()
+
+        if not part:
+            continue
+
+        if part.upper() == "AND":
+            converted.append("And")
+
+        elif part.upper() == "OR":
+            converted.append("Or")
+
+        else:
+            converted.append(
+                convert_single_condition(part)
+            )
+
+    return " ".join(converted)
+
+
+# ============================================================
+# MDD GENERATION
+# ============================================================
+
+def get_cardinality(question, multiple=False):
+    """
+    Decide the MDD categorical cardinality.
+
+    Required single choice:
+        [1..1]
+
+    Optional single choice:
+        [0..1]
+
+    Required multiple choice:
+        [1..N]
+
+    Optional multiple choice:
+        [0..N]
+    """
+
+    required = question.get("required", False)
+
+    minimum = 1 if required else 0
+
+    if multiple:
+        options = question.get("options", [])
+        maximum = len(options)
+
+        if maximum == 0:
+            maximum = "*"
+
+        return f"[{minimum}..{maximum}]"
+
+    return f"[{minimum}..1]"
+
+
+def generate_categories(options):
+    """
+    Generate:
+
+    {
+        yes "Yes" INDEX(1),
+        no "No" INDEX(2)
+    }
+    """
+
+    lines = ["    {"]
+
+    for index, option in enumerate(options, start=1):
+
+        value = option.get(
+            "value",
+            f"option_{index}"
+        )
+
+        label = option.get(
+            "label",
+            value
+        )
+
+        value = sanitize_name(value)
+        label = escape_text(label)
+
+        comma = "," if index < len(options) else ""
+
+        lines.append(
+            f'        {value} "{label}" INDEX({index}){comma}'
+        )
+
+    lines.append("    }")
+
+    return lines
+
+
+def convert_single_choice(question):
+    qid = question["id"]
+    text = escape_text(question.get("text", qid))
+
+    cardinality = get_cardinality(question)
+
+    options = question.get("options", [])
+
+    # Default = Radio
+    style = question.get("style", "Radio")
+
+    style_mapping = {
+        "radio": "Radio",
+        "dropdown": "DropDown",
+        "drop_down": "DropDown",
+        "select": "DropDown"
+    }
+
+    style = style_mapping.get(
+        str(style).lower(),
+        style
+    )
+
+    lines = [
+        f'{qid} "{text}"',
+        f"    Categorical {cardinality}"
+    ]
+
+    lines.extend(
+        generate_categories(options)
+    )
+
+    lines[-1] += f" Style({style});"
+
+    return lines
+
+
+def convert_multi_choice(question):
+    qid = question["id"]
+    text = escape_text(question.get("text", qid))
+
+    cardinality = get_cardinality(
+        question,
+        multiple=True
+    )
+
+    options = question.get("options", [])
+
+    lines = [
+        f'{qid} "{text}"',
+        f"    Categorical {cardinality}"
+    ]
+
+    lines.extend(
+        generate_categories(options)
+    )
+
+    lines[-1] += " Style(CheckBox);"
+
+    return lines
+
+
+def convert_text_question(question):
+    qid = question["id"]
+    text = escape_text(question.get("text", qid))
+
+    max_length = (
+        question.get("maxLength")
+        or question.get("max_length")
+        or 255
+    )
+
+    return [
+        f'{qid} "{text}" Text[{max_length}];'
+    ]
+
+
+def convert_integer_question(question):
+    qid = question["id"]
+    text = escape_text(question.get("text", qid))
+
+    minimum = question.get("min")
+    maximum = question.get("max")
+
+    if minimum is not None and maximum is not None:
+        return [
+            f'{qid} "{text}" Long [{minimum}..{maximum}];'
+        ]
+
+    return [
+        f'{qid} "{text}" Long;'
+    ]
+
+
+def convert_decimal_question(question):
+    qid = question["id"]
+    text = escape_text(question.get("text", qid))
+
+    return [
+        f'{qid} "{text}" Double;'
+    ]
+
+
+def convert_date_question(question):
+    qid = question["id"]
+    text = escape_text(question.get("text", qid))
+
+    return [
+        f'{qid} "{text}" Date;'
+    ]
+
+
+def convert_boolean_question(question):
+    qid = question["id"]
+    text = escape_text(question.get("text", qid))
+
+    required = question.get("required", False)
+
+    cardinality = "[1..1]" if required else "[0..1]"
+
+    return [
+        f'{qid} "{text}"',
+        f"    Categorical {cardinality}",
+        "    {",
+        '        yes "Yes" INDEX(1),',
+        '        no "No" INDEX(2)',
+        "    } Style(Radio);"
+    ]
+
+
+def question_to_mdd(question):
+    """
+    Convert one JSON question into MDD metadata.
+
+    IMPORTANT:
+    No askIf, routing or prefill is written here.
+    Those belong in the MRS file.
+    """
+
+    qid = question.get("id")
+
+    if not qid:
+        raise ValueError(
+            "Every question must contain an 'id'."
+        )
+
+    text = question.get("text", qid)
+
+    question_type = str(
+        question.get("type", "text")
+    ).lower()
+
+    lines = [
+        f"'---- {qid}: {text} "
+        + "-" * 45
+    ]
+
+    if question_type in {
+        "single_choice",
+        "single-choice",
+        "singlechoice",
+        "radio",
+        "dropdown"
+    }:
+
+        # If JSON uses type=dropdown
+        if question_type == "dropdown":
+            question = dict(question)
+            question["style"] = "DropDown"
+
+        lines.extend(
+            convert_single_choice(question)
+        )
+
+    elif question_type in {
+        "multi_choice",
+        "multiple_choice",
+        "multiple-choice",
+        "multichoice",
+        "checkbox",
+        "checkboxes"
+    }:
+
+        lines.extend(
+            convert_multi_choice(question)
+        )
+
+    elif question_type in {
+        "text",
+        "string",
+        "free_text",
+        "free-text",
+        "textarea"
+    }:
+
+        lines.extend(
+            convert_text_question(question)
+        )
+
+    elif question_type in {
+        "number",
+        "integer",
+        "int",
+        "long"
+    }:
+
+        lines.extend(
+            convert_integer_question(question)
+        )
+
+    elif question_type in {
+        "decimal",
+        "float",
+        "double"
+    }:
+
+        lines.extend(
+            convert_decimal_question(question)
+        )
+
+    elif question_type == "date":
+
+        lines.extend(
+            convert_date_question(question)
+        )
+
+    elif question_type in {
+        "boolean",
+        "yes_no",
+        "yes-no"
+    }:
+
+        lines.extend(
+            convert_boolean_question(question)
+        )
+
+    else:
+        print(
+            f"WARNING: Unknown question type "
+            f"'{question_type}' for {qid}. "
+            f"Using Text."
+        )
+
+        lines.extend(
+            convert_text_question(question)
+        )
+
+    return "\n".join(lines)
+
+
+def generate_mdd(survey, output_path):
+    """
+    Generate complete MDD file.
+    """
+
+    questions = survey.get("questions", [])
+
+    output = [
+        "Metadata",
+        "    Version(5)",
+        ""
+    ]
+
+    # Survey information
+    if survey.get("id"):
+        output.append(
+            f"' Survey ID: {survey['id']}"
+        )
+
+    if survey.get("title"):
+        output.append(
+            f"' Title: {survey['title']}"
+        )
+
+    if survey.get("version"):
+        output.append(
+            f"' Survey Version: {survey['version']}"
+        )
+
+    if survey.get("description"):
+        output.append(
+            f"' Description: {survey['description']}"
+        )
+
+    output.append("")
+
+    for question in questions:
+        output.append(
+            question_to_mdd(question)
+        )
+
+        output.append("")
+
+    with open(
+        output_path,
+        "w",
+        encoding="utf-8"
+    ) as file:
+
+        file.write(
+            "\n".join(output)
+        )
+
+
+# ============================================================
+# MRS GENERATION
+# ============================================================
+
+def get_ask_if(question):
+    """
+    Support common askIf spellings.
+    """
+
+    return (
+        question.get("askIf")
+        or question.get("ask_if")
+        or question.get("askif")
+    )
+
+
+def build_routing_conditions(questions):
+    """
+    Read:
+
+    "routing": {
+        "rules": [
+            {
+                "condition": "Q1 == 'yes'",
+                "goto": "Q1a"
+            }
+        ]
+    }
+
+    Returns:
+
+    {
+        "Q1a": "Q1 == 'yes'"
+    }
+
+    askIf takes precedence later if both exist.
+    """
+
+    routing_conditions = {}
+
+    for question in questions:
+
+        routing = question.get("routing")
+
+        if not routing:
+            continue
+
+        rules = routing.get("rules", [])
+
+        for rule in rules:
+
+            condition = rule.get("condition")
+            target = rule.get("goto")
+
+            if not condition or not target:
+                continue
+
+            # Do not overwrite an existing route condition
+            if target not in routing_conditions:
+                routing_conditions[target] = condition
+
+    return routing_conditions
+
+
+def split_and_conditions(condition):
+    """
+    Used to reproduce nested MRS like the sample.
+
+    Input:
+        Q1 == 'yes' && Q1a == 'truck'
+
+    Output:
+        [
+            "Q1 = {yes}",
+            "Q1a = {truck}"
+        ]
+
+    OR expressions are kept together.
+    """
+
+    if not condition:
+        return []
+
+    normalized = condition.replace("&&", " AND ")
+
+    parts = re.split(
+        r"\s+AND\s+",
+        normalized,
+        flags=re.IGNORECASE
+    )
+
+    result = []
+
+    for part in parts:
+        result.append(
+            convert_condition(part.strip())
+        )
+
+    return result
+
+
+def generate_conditional_ask(qid, condition, indent=1):
+    """
+    Example:
+
+    condition:
+        Q1 == 'yes' && Q1a == 'truck'
+
+    generates:
+
+        If Q1 = {yes} Then
+            If Q1a = {truck} Then
+                Ask Q1b
+            End If
+        End If
+    """
+
+    lines = []
+
+    conditions = split_and_conditions(condition)
+
+    base_indent = "    " * indent
+
+    current_indent = indent
+
+    for item in conditions:
+
+        prefix = "    " * current_indent
+
+        lines.append(
+            f"{prefix}If {item} Then"
+        )
+
+        current_indent += 1
+
+    prefix = "    " * current_indent
+
+    lines.append(
+        f"{prefix}Ask {qid}"
+    )
+
+    # Close in reverse
+    for _ in reversed(conditions):
+
+        current_indent -= 1
+
+        prefix = "    " * current_indent
+
+        lines.append(
+            f"{prefix}End If"
+        )
+
+    return lines
+
+
+# ============================================================
+# PREFILL
+# ============================================================
+
+def normalize_prefill(survey):
+    """
+    Get prefill rules.
+
+    Expected JSON:
+
+    "prefill": [
+        {
+            "condition": "Q2 == 'employed'",
+            "set": {
+                "Q3": "yes"
+            }
+        },
+        {
+            "condition":
+                "Q2 == 'unemployed' || Q2 == 'student'",
+            "set": {
+                "Q3": "no"
+            }
+        }
+    ]
+    """
+
+    return survey.get("prefill", [])
+
+
+def group_prefill_by_target(prefill_rules):
+    """
+    Convert prefill array into:
+
+    {
+        "Q3": [
+            {
+                "condition": "...",
+                "value": "yes"
+            },
+            ...
+        ]
+    }
+    """
+
+    result = {}
+
+    for rule in prefill_rules:
+
+        condition = rule.get("condition")
+        set_values = rule.get("set", {})
+
+        if not condition:
+            continue
+
+        if not isinstance(set_values, dict):
+            continue
+
+        for target, value in set_values.items():
+
+            result.setdefault(
+                target,
+                []
+            ).append({
+                "condition": condition,
+                "value": value
+            })
+
+    return result
+
+
+def generate_prefill_block(target, rules, indent=1):
+    """
+    Generates:
+
+        If Q2 = {employed} Then
+            Q3.SetValue({yes})
+        ElseIf Q2 = {unemployed} Or Q2 = {student} Then
+            Q3.SetValue({no})
+        End If
+    """
+
+    if not rules:
+        return []
+
+    lines = []
+
+    base = "    " * indent
+    value_indent = "    " * (indent + 1)
+
+    for index, rule in enumerate(rules):
+
+        condition = convert_condition(
+            rule["condition"]
+        )
+
+        value = sanitize_name(
+            rule["value"]
+        )
+
+        if index == 0:
+
+            lines.append(
+                f"{base}If {condition} Then"
+            )
+
+        else:
+
+            lines.append(
+                f"{base}ElseIf {condition} Then"
+            )
+
+        lines.append(
+            f"{value_indent}"
+            f"{target}.SetValue({{{value}}})"
+        )
+
+    lines.append(
+        f"{base}End If"
+    )
+
+    return lines
+
+
+# ============================================================
+# COMPLETE MRS
+# ============================================================
+
+def generate_mrs(survey, output_path):
+    """
+    Generate complete mScriptBasic routing file.
+    """
+
+    questions = survey.get("questions", [])
+
+    if not questions:
+        raise ValueError(
+            "No questions found."
+        )
+
+    routing_conditions = build_routing_conditions(
+        questions
+    )
+
+    prefill_rules = normalize_prefill(
+        survey
+    )
+
+    prefill_by_target = group_prefill_by_target(
+        prefill_rules
+    )
+
+    output = [
+        "' ============================================================",
+        "' Routing script (mScriptBasic)",
+        "' Generated from questionnaire JSON.",
+        "' Routing / askIf / prefill logic is stored here.",
+        "' ============================================================",
+        "",
+        "Sub Routing()"
+    ]
+
+    start_question = survey.get(
+        "startQuestion"
+    )
+
+    # Start from specified question if available
+    start_index = 0
+
+    if start_question:
+
+        for index, question in enumerate(questions):
+
+            if question.get("id") == start_question:
+                start_index = index
+                break
+
+    active_questions = questions[start_index:]
+
+    for question in active_questions:
+
+        qid = question.get("id")
+
+        if not qid:
+            continue
+
+        # ---------------------------------------------
+        # Prefill must happen BEFORE Ask
+        # ---------------------------------------------
+
+        if qid in prefill_by_target:
+
+            output.append("")
+
+            output.append(
+                f"    ' Prefill default value for {qid}"
+            )
+
+            output.extend(
+                generate_prefill_block(
+                    qid,
+                    prefill_by_target[qid],
+                    indent=1
+                )
+            )
+
+            output.append("")
+
+        # ---------------------------------------------
+        # Determine condition
+        # ---------------------------------------------
+
+        ask_if = get_ask_if(question)
+
+        # askIf has priority.
+        # If missing, use routing rule pointing here.
+        condition = (
+            ask_if
+            or routing_conditions.get(qid)
+        )
+
+        # ---------------------------------------------
+        # Conditional question
+        # ---------------------------------------------
+
+        if condition:
+
+            output.append("")
+
+            output.extend(
+                generate_conditional_ask(
+                    qid,
+                    condition,
+                    indent=1
+                )
+            )
+
+        # ---------------------------------------------
+        # Normal question
+        # ---------------------------------------------
+
+        else:
+
+            output.append("")
+
+            output.append(
+                f"    Ask {qid}"
+            )
+
+    output.append("")
+    output.append("End Sub")
+    output.append("")
+
+    with open(
+        output_path,
+        "w",
+        encoding="utf-8"
+    ) as file:
+
+        file.write(
+            "\n".join(output)
+        )
+
+
+# ============================================================
+# VALIDATION
+# ============================================================
+
+def validate_survey(data):
+    """
+    Basic validation of questionnaire JSON.
+    """
+
+    if not isinstance(data, dict):
+        raise ValueError(
+            "Root JSON must be an object."
+        )
+
+    if "survey" not in data:
+        raise ValueError(
+            "JSON must contain a 'survey' object."
+        )
+
+    survey = data["survey"]
+
+    if not isinstance(survey, dict):
+        raise ValueError(
+            "'survey' must be an object."
+        )
+
+    questions = survey.get("questions")
+
+    if not isinstance(questions, list):
+        raise ValueError(
+            "'survey.questions' must be an array."
+        )
+
+    if not questions:
+        raise ValueError(
+            "'survey.questions' is empty."
+        )
+
+    question_ids = set()
+
+    for index, question in enumerate(
+        questions,
+        start=1
+    ):
+
+        if not isinstance(question, dict):
+            raise ValueError(
+                f"Question #{index} must be an object."
+            )
+
+        qid = question.get("id")
+
+        if not qid:
+            raise ValueError(
+                f"Question #{index} does not have an id."
+            )
+
+        if qid in question_ids:
+            raise ValueError(
+                f"Duplicate question ID found: {qid}"
+            )
+
+        question_ids.add(qid)
+
+    return survey
+
+
+# ============================================================
+# MAIN CONVERTER
+# ============================================================
+
+def convert_json(
+    json_file,
+    mdd_output=None,
+    mrs_output=None
+):
+    """
+    Convert one questionnaire JSON file into:
+
+        questionnaire.mdd
+        questionnaire.mrs
+    """
+
+    json_path = Path(json_file)
+
+    if not json_path.exists():
+        raise FileNotFoundError(
+            f"JSON file not found: {json_path}"
+        )
+
+    if json_path.suffix.lower() != ".json":
+        raise ValueError(
+            "Input file must be a .json file."
+        )
+
+    # Read JSON
+    with open(
+        json_path,
+        "r",
+        encoding="utf-8"
+    ) as file:
+
+        data = json.load(file)
+
+    # Validate
+    survey = validate_survey(data)
+
+    # Automatically create filenames
+    if mdd_output is None:
+        mdd_path = json_path.with_suffix(
+            ".mdd"
+        )
+    else:
+        mdd_path = Path(mdd_output)
+
+    if mrs_output is None:
+        mrs_path = json_path.with_suffix(
+            ".mrs"
+        )
+    else:
+        mrs_path = Path(mrs_output)
+
+    # Generate files
+    generate_mdd(
+        survey,
+        mdd_path
+    )
+
+    generate_mrs(
+        survey,
+        mrs_path
+    )
+
+    print("")
+    print("Conversion completed successfully.")
+    print("")
+    print(f"MDD created: {mdd_path}")
+    print(f"MRS created: {mrs_path}")
+    print("")
+
+    return mdd_path, mrs_path
+
+
+# ============================================================
+# COMMAND LINE
+# ============================================================
+
+if __name__ == "__main__":
+
+    if len(sys.argv) < 2:
+
+        print("")
+        print("JSON -> MDD + MRS Converter")
+        print("")
+        print("Usage:")
+        print(
+            "python json_converter.py questionnaire.json"
+        )
+        print("")
+        print("Example:")
+        print(
+            "python json_converter.py questionnaire_1.json"
+        )
+        print("")
+
+        sys.exit(1)
+
+    input_json = sys.argv[1]
+
+    try:
+
+        convert_json(
+            input_json
+        )
+
+    except json.JSONDecodeError as error:
+
+        print("")
+        print("ERROR: Invalid JSON.")
+        print(
+            f"Line {error.lineno}, "
+            f"column {error.colno}: "
+            f"{error.msg}"
+        )
+
+        sys.exit(1)
+
+    except Exception as error:
+
+        print("")
+        print(
+            f"ERROR: {error}"
+        )
+
+        sys.exit(1)
