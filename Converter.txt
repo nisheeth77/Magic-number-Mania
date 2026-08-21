@@ -1,0 +1,678 @@
+import json
+import re
+import sys
+from pathlib import Path
+
+
+# ---------------------------------------------------------
+# Utility functions
+# ---------------------------------------------------------
+
+def escape_text(value):
+    """
+    Escape text so that it can safely be written inside
+    double quotes in the MDD file.
+    """
+    if value is None:
+        return ""
+
+    value = str(value)
+    value = value.replace("\\", "\\\\")
+    value = value.replace('"', '\\"')
+
+    return value
+
+
+def sanitize_name(value):
+    """
+    Convert a JSON value into a safe MDD category name.
+
+    Example:
+        "Very Good" -> "Very_Good"
+        "1-star"     -> "_1_star"
+    """
+    value = str(value).strip()
+
+    # Replace spaces/special characters with _
+    value = re.sub(r"[^A-Za-z0-9_]", "_", value)
+
+    # Variable/category names should not begin with a number
+    if value and value[0].isdigit():
+        value = "_" + value
+
+    return value or "option"
+
+
+# ---------------------------------------------------------
+# Convert JSON conditions to MDD Expression syntax
+# ---------------------------------------------------------
+
+def convert_single_condition(condition):
+    """
+    Examples:
+
+    Q1 == 'yes'
+        ->
+    Q1 = {yes}
+
+    Q1 != 'no'
+        ->
+    Q1 <> {no}
+    """
+
+    condition = condition.strip()
+
+    # ==
+    match = re.fullmatch(
+        r"([A-Za-z0-9_]+)\s*==\s*['\"]?([^'\"]+)['\"]?",
+        condition
+    )
+
+    if match:
+        question = match.group(1)
+        value = sanitize_name(match.group(2).strip())
+
+        return f"{question} = {{{value}}}"
+
+    # !=
+    match = re.fullmatch(
+        r"([A-Za-z0-9_]+)\s*!=\s*['\"]?([^'\"]+)['\"]?",
+        condition
+    )
+
+    if match:
+        question = match.group(1)
+        value = sanitize_name(match.group(2).strip())
+
+        return f"{question} <> {{{value}}}"
+
+    return condition
+
+
+def convert_condition(condition):
+    """
+    Handles simple AND / OR conditions.
+
+    Example:
+
+    Q1 == 'yes' && Q1a == 'truck'
+
+        ->
+
+    Q1 = {yes} And Q1a = {truck}
+    """
+
+    if not condition:
+        return None
+
+    condition = condition.strip()
+
+    # Normalize logical operators
+    condition = condition.replace("&&", " AND ")
+    condition = condition.replace("||", " OR ")
+
+    condition = re.sub(r"\band\b", " AND ", condition, flags=re.IGNORECASE)
+    condition = re.sub(r"\bor\b", " OR ", condition, flags=re.IGNORECASE)
+
+    pieces = re.split(r"\s+(AND|OR)\s+", condition, flags=re.IGNORECASE)
+
+    result = []
+
+    for piece in pieces:
+
+        upper = piece.upper()
+
+        if upper == "AND":
+            result.append("And")
+
+        elif upper == "OR":
+            result.append("Or")
+
+        else:
+            result.append(convert_single_condition(piece))
+
+    return " ".join(result)
+
+
+# ---------------------------------------------------------
+# Question converters
+# ---------------------------------------------------------
+
+def convert_options(options):
+    """
+    Convert:
+
+    [
+        {"value": "yes", "label": "Yes"},
+        {"value": "no", "label": "No"}
+    ]
+
+    into:
+
+    {
+        yes "Yes" INDEX(1),
+        no "No" INDEX(2)
+    }
+    """
+
+    lines = ["    {"]
+
+    for index, option in enumerate(options, start=1):
+
+        value = sanitize_name(
+            option.get("value", f"option_{index}")
+        )
+
+        label = escape_text(
+            option.get("label", option.get("value", value))
+        )
+
+        comma = "," if index < len(options) else ""
+
+        lines.append(
+            f'        {value} "{label}" INDEX({index}){comma}'
+        )
+
+    lines.append("    }")
+
+    return lines
+
+
+def convert_single_choice(question):
+
+    qid = question["id"]
+    text = escape_text(question.get("text", qid))
+    required = question.get("required", False)
+
+    options = question.get("options", [])
+
+    minimum = 1 if required else 0
+
+    lines = [
+        f'{qid} "{text}"',
+        f'    Categorical [{minimum}..1]'
+    ]
+
+    lines.extend(convert_options(options))
+
+    # Use supplied style if available
+    style = question.get("style", "Radio")
+
+    style_mapping = {
+        "radio": "Radio",
+        "dropdown": "DropDown",
+        "select": "DropDown"
+    }
+
+    style = style_mapping.get(
+        str(style).lower(),
+        style
+    )
+
+    lines[-1] += f" Style({style});"
+
+    return lines
+
+
+def convert_multi_choice(question):
+
+    qid = question["id"]
+    text = escape_text(question.get("text", qid))
+    required = question.get("required", False)
+
+    options = question.get("options", [])
+
+    minimum = 1 if required else 0
+    maximum = len(options)
+
+    lines = [
+        f'{qid} "{text}"',
+        f'    Categorical [{minimum}..{maximum}]'
+    ]
+
+    lines.extend(convert_options(options))
+
+    lines[-1] += " Style(CheckBox);"
+
+    return lines
+
+
+def convert_text_question(question):
+
+    qid = question["id"]
+    text = escape_text(question.get("text", qid))
+
+    max_length = question.get(
+        "maxLength",
+        question.get("max_length", 255)
+    )
+
+    return [
+        f'{qid} "{text}" Text[{max_length}];'
+    ]
+
+
+def convert_number_question(question):
+
+    qid = question["id"]
+    text = escape_text(question.get("text", qid))
+
+    minimum = question.get("min")
+    maximum = question.get("max")
+
+    if minimum is not None and maximum is not None:
+
+        return [
+            f'{qid} "{text}" Long [{minimum}..{maximum}];'
+        ]
+
+    return [
+        f'{qid} "{text}" Long;'
+    ]
+
+
+def convert_decimal_question(question):
+
+    qid = question["id"]
+    text = escape_text(question.get("text", qid))
+
+    return [
+        f'{qid} "{text}" Double;'
+    ]
+
+
+def convert_date_question(question):
+
+    qid = question["id"]
+    text = escape_text(question.get("text", qid))
+
+    return [
+        f'{qid} "{text}" Date;'
+    ]
+
+
+def convert_boolean_question(question):
+
+    qid = question["id"]
+    text = escape_text(question.get("text", qid))
+
+    return [
+        f'{qid} "{text}"',
+        "    Categorical [0..1]",
+        "    {",
+        '        yes "Yes" INDEX(1),',
+        '        no "No" INDEX(2)',
+        "    } Style(Radio);"
+    ]
+
+
+# ---------------------------------------------------------
+# Main question handler
+# ---------------------------------------------------------
+
+def question_to_mdd(question):
+
+    qid = question.get("id")
+
+    if not qid:
+        raise ValueError(
+            "Every question must contain an 'id'."
+        )
+
+    text = question.get("text", qid)
+
+    question_type = str(
+        question.get("type", "text")
+    ).lower()
+
+    lines = []
+
+    # -----------------------------------------------------
+    # Comment
+    # -----------------------------------------------------
+
+    lines.append(
+        f"'---- {qid}: {text} "
+        + "-" * 50
+    )
+
+    # -----------------------------------------------------
+    # Convert question
+    # -----------------------------------------------------
+
+    if question_type in [
+        "single_choice",
+        "single-choice",
+        "singlechoice",
+        "radio"
+    ]:
+
+        lines.extend(
+            convert_single_choice(question)
+        )
+
+    elif question_type in [
+        "multi_choice",
+        "multiple_choice",
+        "multi-choice",
+        "checkbox"
+    ]:
+
+        lines.extend(
+            convert_multi_choice(question)
+        )
+
+    elif question_type in [
+        "text",
+        "string",
+        "free_text",
+        "textarea"
+    ]:
+
+        lines.extend(
+            convert_text_question(question)
+        )
+
+    elif question_type in [
+        "number",
+        "integer",
+        "int"
+    ]:
+
+        lines.extend(
+            convert_number_question(question)
+        )
+
+    elif question_type in [
+        "decimal",
+        "float"
+    ]:
+
+        lines.extend(
+            convert_decimal_question(question)
+        )
+
+    elif question_type == "date":
+
+        lines.extend(
+            convert_date_question(question)
+        )
+
+    elif question_type in [
+        "boolean",
+        "yes_no"
+    ]:
+
+        lines.extend(
+            convert_boolean_question(question)
+        )
+
+    else:
+
+        print(
+            f"Warning: Unknown question type "
+            f"'{question_type}' for {qid}. "
+            f"Treating it as Text."
+        )
+
+        lines.extend(
+            convert_text_question(question)
+        )
+
+    # -----------------------------------------------------
+    # askIf branching logic
+    # -----------------------------------------------------
+
+    ask_if = (
+        question.get("askIf")
+        or question.get("ask_if")
+        or question.get("condition")
+    )
+
+    if ask_if:
+
+        expression = convert_condition(ask_if)
+
+        lines.append(
+            f'    Expression("{expression}");'
+        )
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------
+# Routing information
+# ---------------------------------------------------------
+
+def generate_routing_comments(question):
+
+    routing = question.get("routing")
+
+    if not routing:
+        return []
+
+    rules = routing.get("rules", [])
+
+    if not rules:
+        return []
+
+    lines = [
+        "' Routing rules:"
+    ]
+
+    for rule in rules:
+
+        condition = rule.get("condition", "")
+        destination = rule.get("goto", "")
+
+        converted = convert_condition(condition)
+
+        lines.append(
+            f"' IF {converted} -> GOTO {destination}"
+        )
+
+    return lines
+
+
+# ---------------------------------------------------------
+# JSON -> MDD conversion
+# ---------------------------------------------------------
+
+def convert_json_to_mdd(json_file, output_file=None):
+
+    json_path = Path(json_file)
+
+    if not json_path.exists():
+        raise FileNotFoundError(
+            f"JSON file not found: {json_file}"
+        )
+
+    # -----------------------------------------------------
+    # Read JSON
+    # -----------------------------------------------------
+
+    with open(
+        json_path,
+        "r",
+        encoding="utf-8"
+    ) as file:
+
+        data = json.load(file)
+
+    # -----------------------------------------------------
+    # Get survey
+    # -----------------------------------------------------
+
+    if "survey" not in data:
+        raise ValueError(
+            "JSON must contain a 'survey' object."
+        )
+
+    survey = data["survey"]
+
+    questions = survey.get(
+        "questions",
+        []
+    )
+
+    if not questions:
+        raise ValueError(
+            "No questions found inside survey.questions."
+        )
+
+    # -----------------------------------------------------
+    # Create output filename
+    # -----------------------------------------------------
+
+    if output_file is None:
+
+        output_file = json_path.with_suffix(
+            ".mdd"
+        )
+
+    # -----------------------------------------------------
+    # Header
+    # -----------------------------------------------------
+
+    output = [
+        "Metadata",
+        "    Version(5)",
+        ""
+    ]
+
+    # Survey information as comments
+
+    survey_id = survey.get("id")
+
+    title = survey.get("title")
+
+    version = survey.get("version")
+
+    description = survey.get("description")
+
+    start_question = survey.get(
+        "startQuestion"
+    )
+
+    if survey_id:
+        output.append(
+            f"' Survey ID: {survey_id}"
+        )
+
+    if title:
+        output.append(
+            f"' Title: {title}"
+        )
+
+    if version:
+        output.append(
+            f"' Survey Version: {version}"
+        )
+
+    if description:
+        output.append(
+            f"' Description: {description}"
+        )
+
+    if start_question:
+        output.append(
+            f"' Start Question: {start_question}"
+        )
+
+    output.append("")
+
+    # -----------------------------------------------------
+    # Questions
+    # -----------------------------------------------------
+
+    for question in questions:
+
+        converted_question = question_to_mdd(
+            question
+        )
+
+        output.append(
+            converted_question
+        )
+
+        routing_comments = (
+            generate_routing_comments(question)
+        )
+
+        if routing_comments:
+            output.extend(
+                routing_comments
+            )
+
+        output.append("")
+
+    # -----------------------------------------------------
+    # Save MDD
+    # -----------------------------------------------------
+
+    with open(
+        output_file,
+        "w",
+        encoding="utf-8"
+    ) as file:
+
+        file.write(
+            "\n".join(output)
+        )
+
+    print(
+        f"MDD generated successfully: {output_file}"
+    )
+
+    return output_file
+
+
+# ---------------------------------------------------------
+# Command line execution
+# ---------------------------------------------------------
+
+if __name__ == "__main__":
+
+    if len(sys.argv) < 2:
+
+        print(
+            "Usage:"
+        )
+
+        print(
+            "python json_to_mdd.py questionnaire.json"
+        )
+
+        print(
+            "\nOR"
+        )
+
+        print(
+            "python json_to_mdd.py "
+            "questionnaire.json output.mdd"
+        )
+
+        sys.exit(1)
+
+    input_json = sys.argv[1]
+
+    output_mdd = (
+        sys.argv[2]
+        if len(sys.argv) >= 3
+        else None
+    )
+
+    try:
+
+        convert_json_to_mdd(
+            input_json,
+            output_mdd
+        )
+
+    except Exception as error:
+
+        print(
+            f"Conversion failed: {error}"
+        )
+
+        sys.exit(1)
