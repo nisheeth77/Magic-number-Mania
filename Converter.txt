@@ -534,3 +534,87 @@ if __name__ == "__main__":
 
     else:
         sys.exit(1)
+
+
+
+
+
+def extract_mdd_questions(mdd_content):
+    """
+    Extract only actual MDD question IDs.
+
+    Question:
+        Q1 "Do you own a car?"
+
+    Category:
+            yes "Yes" INDEX(1)
+
+    Only Q1 should be detected.
+    """
+
+    question_ids = set()
+
+    for line in mdd_content.splitlines():
+
+        # Ignore blank lines
+        if not line.strip():
+            continue
+
+        # Ignore comments
+        if line.lstrip().startswith("'"):
+            continue
+
+        # IMPORTANT:
+        # Actual question definitions start at column 1.
+        # Categories are indented.
+        if line.startswith((" ", "\t")):
+            continue
+
+        stripped = line.strip()
+
+        if stripped == "Metadata":
+            continue
+
+        match = re.match(
+            r'^([A-Za-z_][A-Za-z0-9_]*)\s+"',
+            stripped
+        )
+
+        if match:
+            question_ids.add(match.group(1))
+
+    return question_ids
+
+
+
+
+found_questions = []
+
+for line in lines:
+
+    # Skip blank lines
+    if not line.strip():
+        continue
+
+    # Skip comments
+    if line.lstrip().startswith("'"):
+        continue
+
+    # Skip indented lines such as categories
+    if line.startswith((" ", "\t")):
+        continue
+
+    stripped = line.strip()
+
+    if stripped == "Metadata":
+        continue
+
+    match = re.match(
+        r'^([A-Za-z_][A-Za-z0-9_]*)\s+"',
+        stripped
+    )
+
+    if match:
+        found_questions.append(
+            match.group(1)
+        )
