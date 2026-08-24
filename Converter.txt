@@ -1,678 +1,536 @@
-import json
 import re
 import sys
 from pathlib import Path
 
 
-# ---------------------------------------------------------
-# Utility functions
-# ---------------------------------------------------------
+# ============================================================
+# COMMON HELPERS
+# ============================================================
 
-def escape_text(value):
+def read_file(file_path):
+    path = Path(file_path)
+
+    if not path.exists():
+        raise FileNotFoundError(f"File not found: {path}")
+
+    return path.read_text(encoding="utf-8")
+
+
+# ============================================================
+# MDD VALIDATION
+# ============================================================
+
+def extract_mdd_questions(mdd_content):
     """
-    Escape text so that it can safely be written inside
-    double quotes in the MDD file.
-    """
-    if value is None:
-        return ""
-
-    value = str(value)
-    value = value.replace("\\", "\\\\")
-    value = value.replace('"', '\\"')
-
-    return value
-
-
-def sanitize_name(value):
-    """
-    Convert a JSON value into a safe MDD category name.
+    Extract question IDs declared in MDD.
 
     Example:
-        "Very Good" -> "Very_Good"
-        "1-star"     -> "_1_star"
-    """
-    value = str(value).strip()
+        Q1 "Do you own a car?"
+        Q2 "Employment status"
 
-    # Replace spaces/special characters with _
-    value = re.sub(r"[^A-Za-z0-9_]", "_", value)
-
-    # Variable/category names should not begin with a number
-    if value and value[0].isdigit():
-        value = "_" + value
-
-    return value or "option"
-
-
-# ---------------------------------------------------------
-# Convert JSON conditions to MDD Expression syntax
-# ---------------------------------------------------------
-
-def convert_single_condition(condition):
-    """
-    Examples:
-
-    Q1 == 'yes'
-        ->
-    Q1 = {yes}
-
-    Q1 != 'no'
-        ->
-    Q1 <> {no}
+    Returns:
+        {"Q1", "Q2"}
     """
 
-    condition = condition.strip()
+    question_ids = set()
 
-    # ==
-    match = re.fullmatch(
-        r"([A-Za-z0-9_]+)\s*==\s*['\"]?([^'\"]+)['\"]?",
-        condition
-    )
+    for line in mdd_content.splitlines():
 
-    if match:
-        question = match.group(1)
-        value = sanitize_name(match.group(2).strip())
+        line = line.strip()
 
-        return f"{question} = {{{value}}}"
+        # Ignore comments / headers
+        if (
+            not line
+            or line.startswith("'")
+            or line == "Metadata"
+            or line.startswith("Version")
+            or line.startswith("{")
+            or line.startswith("}")
+        ):
+            continue
 
-    # !=
-    match = re.fullmatch(
-        r"([A-Za-z0-9_]+)\s*!=\s*['\"]?([^'\"]+)['\"]?",
-        condition
-    )
-
-    if match:
-        question = match.group(1)
-        value = sanitize_name(match.group(2).strip())
-
-        return f"{question} <> {{{value}}}"
-
-    return condition
-
-
-def convert_condition(condition):
-    """
-    Handles simple AND / OR conditions.
-
-    Example:
-
-    Q1 == 'yes' && Q1a == 'truck'
-
-        ->
-
-    Q1 = {yes} And Q1a = {truck}
-    """
-
-    if not condition:
-        return None
-
-    condition = condition.strip()
-
-    # Normalize logical operators
-    condition = condition.replace("&&", " AND ")
-    condition = condition.replace("||", " OR ")
-
-    condition = re.sub(r"\band\b", " AND ", condition, flags=re.IGNORECASE)
-    condition = re.sub(r"\bor\b", " OR ", condition, flags=re.IGNORECASE)
-
-    pieces = re.split(r"\s+(AND|OR)\s+", condition, flags=re.IGNORECASE)
-
-    result = []
-
-    for piece in pieces:
-
-        upper = piece.upper()
-
-        if upper == "AND":
-            result.append("And")
-
-        elif upper == "OR":
-            result.append("Or")
-
-        else:
-            result.append(convert_single_condition(piece))
-
-    return " ".join(result)
-
-
-# ---------------------------------------------------------
-# Question converters
-# ---------------------------------------------------------
-
-def convert_options(options):
-    """
-    Convert:
-
-    [
-        {"value": "yes", "label": "Yes"},
-        {"value": "no", "label": "No"}
-    ]
-
-    into:
-
-    {
-        yes "Yes" INDEX(1),
-        no "No" INDEX(2)
-    }
-    """
-
-    lines = ["    {"]
-
-    for index, option in enumerate(options, start=1):
-
-        value = sanitize_name(
-            option.get("value", f"option_{index}")
+        match = re.match(
+            r'^([A-Za-z_][A-Za-z0-9_]*)\s+"',
+            line
         )
 
-        label = escape_text(
-            option.get("label", option.get("value", value))
+        if match:
+            question_ids.add(match.group(1))
+
+    return question_ids
+
+
+def validate_mdd(mdd_file):
+    """
+    Validate the generated MDD structure.
+    """
+
+    errors = []
+
+    try:
+        content = read_file(mdd_file)
+
+    except Exception as error:
+        return False, [str(error)], set()
+
+    lines = content.splitlines()
+
+    # --------------------------------------------------------
+    # Check Metadata header
+    # --------------------------------------------------------
+
+    if "Metadata" not in content:
+        errors.append(
+            "MDD must contain 'Metadata'."
         )
 
-        comma = "," if index < len(options) else ""
+    # --------------------------------------------------------
+    # Check Version
+    # --------------------------------------------------------
 
-        lines.append(
-            f'        {value} "{label}" INDEX({index}){comma}'
+    if not re.search(
+        r"\bVersion\s*\(\s*\d+\s*\)",
+        content
+    ):
+        errors.append(
+            "MDD Metadata Version is missing."
         )
 
-    lines.append("    }")
+    # --------------------------------------------------------
+    # Check brackets/braces
+    # --------------------------------------------------------
 
-    return lines
+    if content.count("{") != content.count("}"):
+        errors.append(
+            "MDD has unbalanced { } braces."
+        )
 
+    if content.count("[") != content.count("]"):
+        errors.append(
+            "MDD has unbalanced [ ] brackets."
+        )
 
-def convert_single_choice(question):
+    # --------------------------------------------------------
+    # Extract question IDs
+    # --------------------------------------------------------
 
-    qid = question["id"]
-    text = escape_text(question.get("text", qid))
-    required = question.get("required", False)
+    questions = extract_mdd_questions(content)
 
-    options = question.get("options", [])
+    if not questions:
+        errors.append(
+            "No questions were found in the MDD."
+        )
 
-    minimum = 1 if required else 0
+    # --------------------------------------------------------
+    # Duplicate question detection
+    # --------------------------------------------------------
 
-    lines = [
-        f'{qid} "{text}"',
-        f'    Categorical [{minimum}..1]'
-    ]
+    found_questions = []
 
-    lines.extend(convert_options(options))
+    for line in lines:
 
-    # Use supplied style if available
-    style = question.get("style", "Radio")
+        line = line.strip()
 
-    style_mapping = {
-        "radio": "Radio",
-        "dropdown": "DropDown",
-        "select": "DropDown"
+        match = re.match(
+            r'^([A-Za-z_][A-Za-z0-9_]*)\s+"',
+            line
+        )
+
+        if match:
+            found_questions.append(
+                match.group(1)
+            )
+
+    duplicates = {
+        qid
+        for qid in found_questions
+        if found_questions.count(qid) > 1
     }
 
-    style = style_mapping.get(
-        str(style).lower(),
-        style
+    if duplicates:
+        errors.append(
+            "Duplicate MDD question IDs: "
+            + ", ".join(sorted(duplicates))
+        )
+
+    # --------------------------------------------------------
+    # Validate categorical questions
+    # --------------------------------------------------------
+
+    for line_number, line in enumerate(
+        lines,
+        start=1
+    ):
+
+        stripped = line.strip()
+
+        if stripped.startswith("Categorical"):
+
+            if not re.search(
+                r"\[\s*\d+\s*\.\.\s*(\d+|\*)\s*\]",
+                stripped
+            ):
+                errors.append(
+                    f"Line {line_number}: "
+                    "Invalid Categorical cardinality."
+                )
+
+    # --------------------------------------------------------
+    # Validate INDEX syntax
+    # --------------------------------------------------------
+
+    for line_number, line in enumerate(
+        lines,
+        start=1
+    ):
+
+        if "INDEX(" in line:
+
+            if not re.search(
+                r"INDEX\(\d+\)",
+                line
+            ):
+                errors.append(
+                    f"Line {line_number}: "
+                    "Invalid INDEX syntax."
+                )
+
+    return (
+        len(errors) == 0,
+        errors,
+        questions
     )
 
-    lines[-1] += f" Style({style});"
 
-    return lines
+# ============================================================
+# MRS VALIDATION
+# ============================================================
 
+def validate_mrs(mrs_file, mdd_questions):
+    """
+    Validate the generated mScriptBasic-style MRS file.
+    """
 
-def convert_multi_choice(question):
+    errors = []
 
-    qid = question["id"]
-    text = escape_text(question.get("text", qid))
-    required = question.get("required", False)
+    try:
+        content = read_file(mrs_file)
 
-    options = question.get("options", [])
+    except Exception as error:
+        return False, [str(error)]
 
-    minimum = 1 if required else 0
-    maximum = len(options)
+    lines = content.splitlines()
 
-    lines = [
-        f'{qid} "{text}"',
-        f'    Categorical [{minimum}..{maximum}]'
-    ]
+    # --------------------------------------------------------
+    # Check Sub Routing
+    # --------------------------------------------------------
 
-    lines.extend(convert_options(options))
+    if not re.search(
+        r"\bSub\s+Routing\s*\(\s*\)",
+        content,
+        re.IGNORECASE
+    ):
+        errors.append(
+            "MRS is missing 'Sub Routing()'."
+        )
 
-    lines[-1] += " Style(CheckBox);"
+    # --------------------------------------------------------
+    # Check End Sub
+    # --------------------------------------------------------
 
-    return lines
+    if not re.search(
+        r"\bEnd\s+Sub\b",
+        content,
+        re.IGNORECASE
+    ):
+        errors.append(
+            "MRS is missing 'End Sub'."
+        )
 
+    # --------------------------------------------------------
+    # Check IF / END IF balance
+    # --------------------------------------------------------
 
-def convert_text_question(question):
+    if_count = 0
+    endif_count = 0
 
-    qid = question["id"]
-    text = escape_text(question.get("text", qid))
+    for line in lines:
 
-    max_length = question.get(
-        "maxLength",
-        question.get("max_length", 255)
+        stripped = line.strip()
+
+        if re.match(
+            r"^(If|ElseIf)\b",
+            stripped,
+            re.IGNORECASE
+        ):
+
+            # ElseIf does NOT open another IF block
+            if stripped.lower().startswith("if "):
+                if_count += 1
+
+        if re.match(
+            r"^End\s+If\b",
+            stripped,
+            re.IGNORECASE
+        ):
+            endif_count += 1
+
+    if if_count != endif_count:
+
+        errors.append(
+            f"Unbalanced If blocks: "
+            f"{if_count} If statements but "
+            f"{endif_count} End If statements."
+        )
+
+    # --------------------------------------------------------
+    # Validate IF syntax
+    # --------------------------------------------------------
+
+    for line_number, line in enumerate(
+        lines,
+        start=1
+    ):
+
+        stripped = line.strip()
+
+        if re.match(
+            r"^(If|ElseIf)\b",
+            stripped,
+            re.IGNORECASE
+        ):
+
+            if not re.search(
+                r"\bThen\s*$",
+                stripped,
+                re.IGNORECASE
+            ):
+                errors.append(
+                    f"Line {line_number}: "
+                    "If/ElseIf statement must end with 'Then'."
+                )
+
+    # --------------------------------------------------------
+    # Validate ASK statements
+    # --------------------------------------------------------
+
+    for line_number, line in enumerate(
+        lines,
+        start=1
+    ):
+
+        stripped = line.strip()
+
+        match = re.match(
+            r"^Ask\s+([A-Za-z_][A-Za-z0-9_]*)$",
+            stripped,
+            re.IGNORECASE
+        )
+
+        if match:
+
+            question_id = match.group(1)
+
+            if question_id not in mdd_questions:
+
+                errors.append(
+                    f"Line {line_number}: "
+                    f"Ask references unknown question "
+                    f"'{question_id}'."
+                )
+
+    # --------------------------------------------------------
+    # Validate SetValue question references
+    # --------------------------------------------------------
+
+    for line_number, line in enumerate(
+        lines,
+        start=1
+    ):
+
+        stripped = line.strip()
+
+        match = re.match(
+            r"^([A-Za-z_][A-Za-z0-9_]*)"
+            r"\.SetValue\(\{([^}]+)\}\)$",
+            stripped,
+            re.IGNORECASE
+        )
+
+        if match:
+
+            question_id = match.group(1)
+
+            if question_id not in mdd_questions:
+
+                errors.append(
+                    f"Line {line_number}: "
+                    f"SetValue references unknown question "
+                    f"'{question_id}'."
+                )
+
+    # --------------------------------------------------------
+    # Validate question references in conditions
+    # --------------------------------------------------------
+
+    for line_number, line in enumerate(
+        lines,
+        start=1
+    ):
+
+        stripped = line.strip()
+
+        if (
+            stripped.lower().startswith("if ")
+            or stripped.lower().startswith("elseif ")
+        ):
+
+            # Find things like:
+            # Q1 = {yes}
+            # Q2 <> {no}
+
+            references = re.findall(
+                r"\b([A-Za-z_][A-Za-z0-9_]*)"
+                r"\s*(?:=|<>)\s*\{",
+                stripped
+            )
+
+            for question_id in references:
+
+                if question_id not in mdd_questions:
+
+                    errors.append(
+                        f"Line {line_number}: "
+                        f"Condition references unknown question "
+                        f"'{question_id}'."
+                    )
+
+    return (
+        len(errors) == 0,
+        errors
     )
 
-    return [
-        f'{qid} "{text}" Text[{max_length}];'
-    ]
 
+# ============================================================
+# COMPILE / VALIDATE BOTH FILES
+# ============================================================
 
-def convert_number_question(question):
+def compile_survey(mdd_file, mrs_file):
 
-    qid = question["id"]
-    text = escape_text(question.get("text", qid))
+    print("")
+    print("=" * 55)
+    print("MDD + MRS VALIDATION")
+    print("=" * 55)
 
-    minimum = question.get("min")
-    maximum = question.get("max")
+    # --------------------------------------------------------
+    # Validate MDD
+    # --------------------------------------------------------
 
-    if minimum is not None and maximum is not None:
+    print("\nCompiling MDD...")
 
-        return [
-            f'{qid} "{text}" Long [{minimum}..{maximum}];'
-        ]
-
-    return [
-        f'{qid} "{text}" Long;'
-    ]
-
-
-def convert_decimal_question(question):
-
-    qid = question["id"]
-    text = escape_text(question.get("text", qid))
-
-    return [
-        f'{qid} "{text}" Double;'
-    ]
-
-
-def convert_date_question(question):
-
-    qid = question["id"]
-    text = escape_text(question.get("text", qid))
-
-    return [
-        f'{qid} "{text}" Date;'
-    ]
-
-
-def convert_boolean_question(question):
-
-    qid = question["id"]
-    text = escape_text(question.get("text", qid))
-
-    return [
-        f'{qid} "{text}"',
-        "    Categorical [0..1]",
-        "    {",
-        '        yes "Yes" INDEX(1),',
-        '        no "No" INDEX(2)',
-        "    } Style(Radio);"
-    ]
-
-
-# ---------------------------------------------------------
-# Main question handler
-# ---------------------------------------------------------
-
-def question_to_mdd(question):
-
-    qid = question.get("id")
-
-    if not qid:
-        raise ValueError(
-            "Every question must contain an 'id'."
-        )
-
-    text = question.get("text", qid)
-
-    question_type = str(
-        question.get("type", "text")
-    ).lower()
-
-    lines = []
-
-    # -----------------------------------------------------
-    # Comment
-    # -----------------------------------------------------
-
-    lines.append(
-        f"'---- {qid}: {text} "
-        + "-" * 50
+    mdd_valid, mdd_errors, questions = validate_mdd(
+        mdd_file
     )
 
-    # -----------------------------------------------------
-    # Convert question
-    # -----------------------------------------------------
+    if mdd_valid:
 
-    if question_type in [
-        "single_choice",
-        "single-choice",
-        "singlechoice",
-        "radio"
-    ]:
+        print("MDD: PASS")
 
-        lines.extend(
-            convert_single_choice(question)
-        )
-
-    elif question_type in [
-        "multi_choice",
-        "multiple_choice",
-        "multi-choice",
-        "checkbox"
-    ]:
-
-        lines.extend(
-            convert_multi_choice(question)
-        )
-
-    elif question_type in [
-        "text",
-        "string",
-        "free_text",
-        "textarea"
-    ]:
-
-        lines.extend(
-            convert_text_question(question)
-        )
-
-    elif question_type in [
-        "number",
-        "integer",
-        "int"
-    ]:
-
-        lines.extend(
-            convert_number_question(question)
-        )
-
-    elif question_type in [
-        "decimal",
-        "float"
-    ]:
-
-        lines.extend(
-            convert_decimal_question(question)
-        )
-
-    elif question_type == "date":
-
-        lines.extend(
-            convert_date_question(question)
-        )
-
-    elif question_type in [
-        "boolean",
-        "yes_no"
-    ]:
-
-        lines.extend(
-            convert_boolean_question(question)
+        print(
+            f"Questions found: {len(questions)}"
         )
 
     else:
 
-        print(
-            f"Warning: Unknown question type "
-            f"'{question_type}' for {qid}. "
-            f"Treating it as Text."
-        )
+        print("MDD: FAIL")
 
-        lines.extend(
-            convert_text_question(question)
-        )
+        for error in mdd_errors:
+            print(f"  - {error}")
 
-    # -----------------------------------------------------
-    # askIf branching logic
-    # -----------------------------------------------------
+    # --------------------------------------------------------
+    # Only validate MRS references if we have MDD questions
+    # --------------------------------------------------------
 
-    ask_if = (
-        question.get("askIf")
-        or question.get("ask_if")
-        or question.get("condition")
+    print("\nCompiling MRS...")
+
+    mrs_valid, mrs_errors = validate_mrs(
+        mrs_file,
+        questions
     )
 
-    if ask_if:
+    if mrs_valid:
 
-        expression = convert_condition(ask_if)
+        print("MRS: PASS")
 
-        lines.append(
-            f'    Expression("{expression}");'
-        )
+    else:
 
-    return "\n".join(lines)
+        print("MRS: FAIL")
 
+        for error in mrs_errors:
+            print(f"  - {error}")
 
-# ---------------------------------------------------------
-# Routing information
-# ---------------------------------------------------------
+    # --------------------------------------------------------
+    # Final result
+    # --------------------------------------------------------
 
-def generate_routing_comments(question):
+    print("")
+    print("=" * 55)
+    print("FINAL RESULT")
+    print("=" * 55)
 
-    routing = question.get("routing")
+    if mdd_valid and mrs_valid:
 
-    if not routing:
-        return []
+        print("COMPILATION SUCCESSFUL")
+        print("Both MDD and MRS passed validation.")
 
-    rules = routing.get("rules", [])
+        return True
 
-    if not rules:
-        return []
+    else:
 
-    lines = [
-        "' Routing rules:"
-    ]
+        print("COMPILATION FAILED")
 
-    for rule in rules:
+        if not mdd_valid:
+            print("MDD contains errors.")
 
-        condition = rule.get("condition", "")
-        destination = rule.get("goto", "")
+        if not mrs_valid:
+            print("MRS contains errors.")
 
-        converted = convert_condition(condition)
-
-        lines.append(
-            f"' IF {converted} -> GOTO {destination}"
-        )
-
-    return lines
+        return False
 
 
-# ---------------------------------------------------------
-# JSON -> MDD conversion
-# ---------------------------------------------------------
-
-def convert_json_to_mdd(json_file, output_file=None):
-
-    json_path = Path(json_file)
-
-    if not json_path.exists():
-        raise FileNotFoundError(
-            f"JSON file not found: {json_file}"
-        )
-
-    # -----------------------------------------------------
-    # Read JSON
-    # -----------------------------------------------------
-
-    with open(
-        json_path,
-        "r",
-        encoding="utf-8"
-    ) as file:
-
-        data = json.load(file)
-
-    # -----------------------------------------------------
-    # Get survey
-    # -----------------------------------------------------
-
-    if "survey" not in data:
-        raise ValueError(
-            "JSON must contain a 'survey' object."
-        )
-
-    survey = data["survey"]
-
-    questions = survey.get(
-        "questions",
-        []
-    )
-
-    if not questions:
-        raise ValueError(
-            "No questions found inside survey.questions."
-        )
-
-    # -----------------------------------------------------
-    # Create output filename
-    # -----------------------------------------------------
-
-    if output_file is None:
-
-        output_file = json_path.with_suffix(
-            ".mdd"
-        )
-
-    # -----------------------------------------------------
-    # Header
-    # -----------------------------------------------------
-
-    output = [
-        "Metadata",
-        "    Version(5)",
-        ""
-    ]
-
-    # Survey information as comments
-
-    survey_id = survey.get("id")
-
-    title = survey.get("title")
-
-    version = survey.get("version")
-
-    description = survey.get("description")
-
-    start_question = survey.get(
-        "startQuestion"
-    )
-
-    if survey_id:
-        output.append(
-            f"' Survey ID: {survey_id}"
-        )
-
-    if title:
-        output.append(
-            f"' Title: {title}"
-        )
-
-    if version:
-        output.append(
-            f"' Survey Version: {version}"
-        )
-
-    if description:
-        output.append(
-            f"' Description: {description}"
-        )
-
-    if start_question:
-        output.append(
-            f"' Start Question: {start_question}"
-        )
-
-    output.append("")
-
-    # -----------------------------------------------------
-    # Questions
-    # -----------------------------------------------------
-
-    for question in questions:
-
-        converted_question = question_to_mdd(
-            question
-        )
-
-        output.append(
-            converted_question
-        )
-
-        routing_comments = (
-            generate_routing_comments(question)
-        )
-
-        if routing_comments:
-            output.extend(
-                routing_comments
-            )
-
-        output.append("")
-
-    # -----------------------------------------------------
-    # Save MDD
-    # -----------------------------------------------------
-
-    with open(
-        output_file,
-        "w",
-        encoding="utf-8"
-    ) as file:
-
-        file.write(
-            "\n".join(output)
-        )
-
-    print(
-        f"MDD generated successfully: {output_file}"
-    )
-
-    return output_file
-
-
-# ---------------------------------------------------------
-# Command line execution
-# ---------------------------------------------------------
+# ============================================================
+# MAIN
+# ============================================================
 
 if __name__ == "__main__":
 
-    if len(sys.argv) < 2:
+    if len(sys.argv) != 3:
 
+        print("")
+        print("Usage:")
         print(
-            "Usage:"
+            "python compiler.py survey.mdd survey.mrs"
         )
 
+        print("")
+        print("Example:")
         print(
-            "python json_to_mdd.py questionnaire.json"
-        )
-
-        print(
-            "\nOR"
-        )
-
-        print(
-            "python json_to_mdd.py "
-            "questionnaire.json output.mdd"
+            "python compiler.py questionnaire_1.mdd "
+            "questionnaire_1.mrs"
         )
 
         sys.exit(1)
 
-    input_json = sys.argv[1]
+    mdd_file = sys.argv[1]
+    mrs_file = sys.argv[2]
 
-    output_mdd = (
-        sys.argv[2]
-        if len(sys.argv) >= 3
-        else None
+    success = compile_survey(
+        mdd_file,
+        mrs_file
     )
 
-    try:
+    if success:
+        sys.exit(0)
 
-        convert_json_to_mdd(
-            input_json,
-            output_mdd
-        )
-
-    except Exception as error:
-
-        print(
-            f"Conversion failed: {error}"
-        )
-
+    else:
         sys.exit(1)
