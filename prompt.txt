@@ -675,3 +675,78 @@ Voice experience
 Keep responses short, warm, natural, professional, and easy to understand.
 
 The overall objective is to provide a seamless du customer journey across voice, automated support, WhatsApp, and human assistance while resolving the customer's needs as efficiently and accurately as possible.
+
+
+
+
+
+
+
+
+Create a concise du Telecom Upsell and Cross-Sell SOP that will be uploaded as a grounding knowledge document for an AI Voice Support Agent.
+
+Use synthetic demo data and clearly state that all plans, prices, and customer information are for demonstration only.
+
+Include the following:
+
+Demo Customer
+
+- Name: Ahmed Hassan
+- Current Plan: Smart 150
+- Price: AED 150/month
+- Data: 10 GB
+- Previous 3-month usage: 17 GB, 16 GB, 18 GB
+- Current remaining data: 0 GB
+
+Upsell Scenario
+
+Customer says: "My mobile data isn't working."
+
+The agent discovers the customer has consumed the full 10 GB allowance.
+
+Since the customer consistently uses 16–18 GB/month, recommend:
+
+Smart 200
+
+- AED 200/month
+- 25 GB data
+- 1000 local minutes
+
+Flow:
+
+Data issue → Check usage → Identify repeated high usage → Recommend Smart 200 → Explain benefit → Get explicit confirmation → Change plan → Confirm success.
+
+Never change the plan without customer verification and explicit confirmation.
+
+Cross-Sell Scenario
+
+After resolving the issue, customer says:
+
+"I'm travelling to the UK next week."
+
+Recommend:
+
+UK Travel Pass
+
+- AED 100
+- 7 days
+- 5 GB roaming data
+- 100 roaming minutes
+
+Flow:
+
+Detect travel intent → Identify destination → Check eligible roaming package → Recommend package → Explain price/benefits → Get explicit confirmation → Activate → Confirm success.
+
+Important AI Rules
+
+- Recommend products only when relevant to the customer's needs.
+- Do not invent plans, prices, discounts, or eligibility.
+- Do not repeatedly recommend something the customer declines.
+- Do not pressure customers into purchasing.
+- Require verification before account changes.
+- Require explicit consent before plan/package activation.
+- Never claim an action succeeded unless the backend confirms it.
+- If the required product/information is unavailable in the SOP, do not fabricate it.
+
+Format the output as a professional, concise SOP with product tables, decision rules, and short example conversations, suitable for grounding a du AI Voice Agent.
+
